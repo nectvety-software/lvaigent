@@ -1,0 +1,618 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * DuckChat design system — ported from ZCode.
+ *
+ * Source of truth (read, not guessed):
+ *   D:/desktop-webapps/ZCode/DESIGN.md
+ *   D:/desktop-webapps/ZCode/packages/ui/src/styles.css  (.theme-zai-dark, lines 606-750)
+ *
+ * The token block below is a verbatim port of `.theme-zai-dark`, which DESIGN.md
+ * names as the active dark theme. `.theme-zai-light` is ported alongside it so the
+ * light theme can be enabled by adding `theme-zai-light` to <html>.
+ *
+ * Rules that come with the port (DESIGN.md):
+ *   - Interface typography MUST use the text-ui-* scale. No text-[13px], no text-sm.
+ *   - Use semantic tokens. No raw one-off colours, no text-white/60 style alpha fills.
+ *   - Keep background / card / popover surfaces distinct.
+ *   - Radius nests: first container rounded-xl -> lg -> md -> sm. rounded-2xl only
+ *     for the approved exceptions (main composer shell, toast, status panel, brand art).
+ *   - Elevation is border-led; shadows are reserved for overlays.
+ */
+
+@layer base {
+  :root {
+    /* --- Tailwind primitives, hex-resolved ---------------------------------
+     * ZCode gets these from Tailwind v4's @theme. Tailwind v3 has no such layer,
+     * so the handful of primitives the Zai palettes actually reference are
+     * declared here. Values match Tailwind v3/v4 (same hex). */
+    --color-white: #ffffff;
+    --color-black: #000000;
+    --color-neutral-300: #d4d4d4;
+    --color-neutral-800: #262626;
+    --color-yellow-300: #fde047;
+    --color-yellow-600: #ca8a04;
+
+    /* --- Interface font scale (DESIGN.md "UI font tokens") ------------------ */
+    --ui-font-size: 14px;
+    --text-ui-xl: calc(var(--ui-font-size) + 4px);
+    --text-ui-lg: calc(var(--ui-font-size) + 2px);
+    --text-ui-base: var(--ui-font-size);
+    --text-ui-caption: calc(var(--ui-font-size) - 1px);
+    --text-ui-sm: calc(var(--ui-font-size) - 2px);
+    --text-ui-xs: calc(var(--ui-font-size) - 4px);
+    /* Restricted: workflow-graph axis furniture only. Never content/labels. */
+    --text-ui-2xs: calc(var(--ui-font-size) - 5px);
+    --tracking-wf-label: 0.09em;
+    /* iOS focus-zoom floor. Platform compatibility, not a hierarchy token. */
+    --text-mobile-input-safe: 16px;
+
+    /* --- Zai Dark: base and structure -------------------------------------- */
+    --animated-gradient-text-strong: rgba(255, 255, 255, 1);
+    --animated-gradient-text-soft: rgba(255, 255, 255, 0.22);
+    --color-background: #161616;
+    --color-background-win-alt: #2b2b2b;
+    --color-background-alt: color-mix(in oklab, var(--color-background-win-alt) 60%, transparent);
+    --color-brand: #ffffff;
+    --color-icon-blue: #4099ff;
+
+    /* --- Zai Dark: trajectory + workflow ----------------------------------- */
+    --color-trajectory-user: #60a5fa;
+    --color-trajectory-assistant: #2dd4bf;
+    --color-trajectory-reasoning: #a78bfa;
+    --color-trajectory-tool-call: #f59e0b;
+    --color-trajectory-tool-result: #38bdf8;
+    --color-workflow-rule: rgba(255, 255, 255, 0.065);
+    --color-workflow-trace: rgba(255, 255, 255, 0.35);
+    --color-workflow-trace-strong: rgba(255, 255, 255, 0.6);
+
+    /* --- Zai Dark: surfaces ------------------------------------------------ */
+    --color-accent: #001d3d;
+    --color-find-highlight: #542500;
+    --color-find-highlight-active: #ff8a30;
+    --color-border: rgba(255, 255, 255, 0.1);
+    --color-border-hover: rgba(255, 255, 255, 0.15);
+    --color-hover: rgba(255, 255, 255, 0.05);
+    --color-selected: rgba(255, 255, 255, 0.1);
+    --color-header: #202020;
+    --color-panel: #202020;
+    --color-sidebar: #161616;
+    --color-surface: rgba(255, 255, 255, 0.05);
+    --color-surface-hover: rgba(255, 255, 255, 0.1);
+    --color-card: #2b2b2b;
+    --color-card-selected: var(--color-input);
+    --color-card-border: var(--color-border);
+    --color-popover: #2b2b2b;
+    --color-popover-foreground: var(--color-foreground);
+    --color-popover-header: #202020;
+    --color-popover-border: var(--color-border);
+    --color-input: #2b2b2b;
+    --color-input-focused: var(--color-input);
+    --color-input-border: var(--color-border);
+    --color-input-border-hover: var(--color-border-hover);
+    --color-input-border-focused: var(--color-border-hover);
+    --color-tab: #202020;
+    --color-tab-active: #161616;
+    --color-tab-border: var(--color-border);
+    --color-menu: #2b2b2b;
+    --color-menu-hover: #363636;
+
+    /* --- Zai Dark: terminal ------------------------------------------------ */
+    --color-terminal-bg: var(--color-background);
+    --color-terminal-fg: var(--color-foreground);
+    --color-terminal-cursor: #f8f8f8;
+    --color-terminal-cursor-accent: #161616;
+    --color-terminal-selection: rgba(64, 153, 255, 0.28);
+    --color-terminal-selection-inactive: rgba(255, 255, 255, 0.1);
+    --color-terminal-black: #363636;
+    --color-terminal-red: #ff5c5c;
+    --color-terminal-green: #46bf72;
+    --color-terminal-yellow: #ff8a30;
+    --color-terminal-blue: #4099ff;
+    --color-terminal-magenta: #7b5ce5;
+    --color-terminal-cyan: #42c8c8;
+    --color-terminal-white: #adadad;
+    --color-terminal-bright-black: #747474;
+    --color-terminal-bright-red: #ff9999;
+    --color-terminal-bright-green: #87d9a4;
+    --color-terminal-bright-yellow: #ffb26b;
+    --color-terminal-bright-blue: #80beff;
+    --color-terminal-bright-magenta: #a888f2;
+    --color-terminal-bright-cyan: #8ee5e5;
+    --color-terminal-bright-white: #f8f8f8;
+
+    /* --- Zai Dark: charts -------------------------------------------------- */
+    --color-usage-chart-1: #4099ff;
+    --color-usage-chart-2: #46bf72;
+    --color-usage-chart-3: #7b5ce5;
+    --color-usage-chart-4: #ff5c5c;
+    --color-usage-chart-5: #ff8a30;
+    --color-usage-chart-6: #42c8c8;
+    --color-context-breakdown-1: #4099ff;
+    --color-context-breakdown-2: #66adff;
+    --color-context-breakdown-3: #80beff;
+    --color-context-breakdown-4: #9dceff;
+    --color-context-breakdown-5: #b9ddff;
+    --color-context-breakdown-6: #d0e8ff;
+    --color-context-breakdown-7: #e4f1ff;
+    --color-usage-heatmap-0: color-mix(in oklab, #4099ff 0%, var(--color-surface));
+    --color-usage-heatmap-1: color-mix(in oklab, #4099ff 24%, var(--color-surface));
+    --color-usage-heatmap-2: color-mix(in oklab, #4099ff 42%, var(--color-surface));
+    --color-usage-heatmap-3: color-mix(in oklab, #4099ff 62%, var(--color-surface));
+    --color-usage-heatmap-4: color-mix(in oklab, #80beff 78%, var(--color-surface));
+
+    /* --- Zai Dark: actions and states -------------------------------------- */
+    --color-primary: #ffffff;
+    --color-primary-foreground: #000000;
+    --color-secondary: #363636;
+    --color-interaction-ask-surface: #001d3d;
+    --color-interaction-ask-foreground: #80beff;
+    --color-interaction-ask-fill: rgba(70, 191, 114, 0.24);
+    --color-interaction-confirmation-surface: rgba(70, 191, 114, 0.16);
+    --color-interaction-confirmation-foreground: #87d9a4;
+    --color-foreground: var(--color-neutral-300);
+    --color-foreground-subtle: color-mix(in oklab, var(--color-neutral-300) 60%, transparent);
+    --color-foreground-subtlest: color-mix(in oklab, var(--color-neutral-300) 30%, transparent);
+    --color-foreground-inverse: #000000;
+    --color-success: #46bf72;
+    --color-success-foreground: #000000;
+    --color-idle-task: #7b5ce5;
+    --color-idle-task-surface: #160d38;
+    --color-destructive: #ff5c5c;
+    /* Zai Dark intentionally keeps white destructive-foreground so red danger
+     * buttons stay legible; the theme's black value would conflict. */
+    --color-destructive-foreground: #ffffff;
+    --color-warning: #ff8a30;
+    --color-feedback-privacy-hint: var(--color-yellow-300);
+    --color-warning-foreground: #000000;
+    --color-diff-added: #46bf72;
+    --color-diff-added-foreground: #000000;
+    --color-diff-removed: #ff5c5c;
+    --color-diff-removed-foreground: #000000;
+    --color-git-none: var(--color-foreground);
+    --color-git-modified: #ff8a30;
+    --color-git-added: #46bf72;
+    --color-git-deleted: #ff5c5c;
+    --color-git-renamed: #4099ff;
+    --color-git-untracked: #46bf72;
+    --color-git-ignored: var(--color-foreground-subtlest);
+    --color-git-descendant: #ff8a30;
+
+    /* --- Zai Dark: overlays ------------------------------------------------ */
+    --color-toast: #2b2b2b;
+    --color-tooltip: #2b2b2b;
+    --color-tooltip-foreground: #f8f8f8;
+    --color-tooltip-tag: #363636;
+    --color-tooltip-tag-foreground: #adadad;
+    --color-tag: #363636;
+    --color-markdown-inline-code: var(--color-tag);
+
+    /* --- Zai Dark: graph node accents -------------------------------------- */
+    --color-file-node: rgba(112, 174, 224, 0.16);
+    --color-file-node-hover: rgba(112, 174, 224, 0.22);
+    --color-file-node-foreground: #8fc5ef;
+    --color-skill-node: rgba(166, 137, 218, 0.16);
+    --color-skill-node-hover: rgba(166, 137, 218, 0.22);
+    --color-skill-node-foreground: #bda5e6;
+    --color-command-node: rgba(154, 166, 180, 0.14);
+    --color-command-node-hover: rgba(154, 166, 180, 0.2);
+    --color-command-node-foreground: #b5c0cc;
+    --color-subagent-node: rgba(183, 189, 117, 0.16);
+    --color-subagent-node-hover: rgba(183, 189, 117, 0.22);
+    --color-subagent-node-foreground: #c8cd90;
+    --color-session-node: rgba(104, 196, 188, 0.16);
+    --color-session-node-hover: rgba(104, 196, 188, 0.22);
+    --color-session-node-foreground: #93d8d2;
+    --color-plugin-node: rgba(224, 174, 112, 0.16);
+    --color-plugin-node-hover: rgba(224, 174, 112, 0.22);
+    --color-plugin-node-foreground: #efc58f;
+    --color-plugin-paid-plan-badge: #5a341b;
+    --color-plugin-paid-plan-badge-foreground: #ffd8b8;
+
+    /* --- Deprecated shims ---------------------------------------------------
+     * Pre-port DuckChat token names, remapped onto ZCode semantics so any
+     * component that has not been migrated yet still renders correctly instead
+     * of falling back to a transparent colour. Delete once migration is done. */
+    --background-base: var(--color-background);
+    --background-stronger: var(--color-background-alt);
+    --surface-base: var(--color-surface);
+    --surface-panel: var(--color-panel);
+    --surface-raised: var(--color-card);
+    --surface-raised-hover: var(--color-card-selected);
+    --text-strong: var(--color-foreground);
+    --text-base: var(--color-foreground-subtle);
+    --text-weak: var(--color-foreground-subtle);
+    --text-weaker: var(--color-foreground-subtlest);
+    --border-base: var(--color-border);
+    --border-weak-base: var(--color-border);
+    --border-weaker-base: var(--color-border);
+    --icon-base: var(--color-foreground-subtle);
+    --icon-strong: var(--color-foreground);
+    --icon-interactive: var(--color-brand);
+  }
+
+  /* Light theme, ported verbatim from `.theme-zai-light`. */
+  .theme-zai-light {
+    --animated-gradient-text-strong: rgba(13, 13, 13, 1);
+    --animated-gradient-text-soft: rgba(13, 13, 13, 0.22);
+    --color-background: #f8f8f8;
+    --color-background-win-alt: #ececee;
+    --color-background-alt: color-mix(in oklab, var(--color-background) 70%, transparent);
+    --color-brand: #000000;
+    --color-workflow-rule: rgba(13, 13, 13, 0.055);
+    --color-workflow-trace: rgba(13, 13, 13, 0.3);
+    --color-workflow-trace-strong: rgba(13, 13, 13, 0.55);
+    --color-accent: #ebf4ff;
+    --color-find-highlight: #fff4eb;
+    --color-find-highlight-active: #ffb26b;
+    --color-border: rgba(13, 13, 13, 0.1);
+    --color-border-hover: rgba(13, 13, 13, 0.15);
+    --color-hover: rgba(13, 13, 13, 0.05);
+    --color-selected: rgba(13, 13, 13, 0.05);
+    --color-header: #ffffff;
+    --color-panel: #ffffff;
+    --color-sidebar: #f0f0f0;
+    --color-surface: rgba(13, 13, 13, 0.03);
+    --color-surface-hover: rgba(13, 13, 13, 0.05);
+    --color-card: #ffffff;
+    --color-card-selected: var(--color-input);
+    --color-card-border: var(--color-border);
+    --color-popover: #ffffff;
+    --color-popover-foreground: var(--color-foreground);
+    --color-popover-header: #f8f8f8;
+    --color-popover-border: var(--color-border);
+    --color-input: #ffffff;
+    --color-input-focused: var(--color-input);
+    --color-input-border: var(--color-border);
+    --color-input-border-hover: var(--color-border-hover);
+    --color-input-border-focused: var(--color-border-hover);
+    --color-tab: #f0f0f0;
+    --color-tab-active: #ffffff;
+    --color-tab-border: var(--color-border);
+    --color-menu: #ffffff;
+    --color-menu-hover: #f0f0f0;
+    --color-primary: #000000;
+    --color-primary-foreground: #ffffff;
+    --color-secondary: #e6e6e6;
+    --color-interaction-ask-surface: #ebf4ff;
+    --color-interaction-ask-foreground: #0066dd;
+    --color-interaction-ask-fill: rgba(70, 191, 114, 0.2);
+    --color-interaction-confirmation-surface: #eaf7ee;
+    --color-interaction-confirmation-foreground: #166b32;
+    --color-foreground: var(--color-neutral-800);
+    --color-foreground-subtle: color-mix(in oklab, var(--color-neutral-800) 60%, transparent);
+    --color-foreground-subtlest: color-mix(in oklab, var(--color-neutral-800) 40%, transparent);
+    --color-foreground-inverse: #ffffff;
+    --color-success: #1e8a3e;
+    --color-success-foreground: #ffffff;
+    --color-idle-task: #9e77ed;
+    --color-idle-task-surface: #f5f3ff;
+    --color-destructive: #e03131;
+    --color-destructive-foreground: #ffffff;
+    --color-warning: #e07b00;
+    --color-feedback-privacy-hint: var(--color-yellow-600);
+    --color-warning-foreground: #ffffff;
+    --color-diff-added: #1e8a3e;
+    --color-diff-added-foreground: #ffffff;
+    --color-diff-removed: #e03131;
+    --color-diff-removed-foreground: #ffffff;
+    --color-git-modified: #e07b00;
+    --color-git-added: #1e8a3e;
+    --color-git-deleted: #e03131;
+    --color-git-renamed: #0b7fff;
+    --color-git-untracked: #1e8a3e;
+    --color-git-descendant: #e07b00;
+    --color-toast: #ffffff;
+    --color-tooltip: #f0f0f0;
+    --color-tooltip-foreground: #0d0d0d;
+    --color-tooltip-tag: #e6e6e6;
+    --color-tooltip-tag-foreground: #5c5c5c;
+    --color-tag: #e6e6e6;
+    --color-terminal-bg: var(--color-background);
+    --color-terminal-fg: var(--color-foreground);
+    --color-terminal-cursor: #0d0d0d;
+    --color-terminal-cursor-accent: var(--color-background);
+    --color-terminal-selection: rgba(11, 127, 255, 0.22);
+    --color-terminal-selection-inactive: rgba(13, 13, 13, 0.1);
+    --color-terminal-black: #5c5c5c;
+    --color-terminal-white: #adadad;
+    --color-terminal-bright-black: #888888;
+    --color-terminal-bright-white: #0d0d0d;
+    --color-file-node-foreground: #1a70b8;
+    --color-skill-node-foreground: #7453b0;
+    --color-command-node-foreground: #566270;
+    --color-subagent-node-foreground: #6f7a2f;
+    --color-session-node-foreground: #14807a;
+    --color-plugin-node-foreground: #b87a1a;
+    --color-plugin-paid-plan-badge: #ffe3c8;
+    --color-plugin-paid-plan-badge-foreground: #4b280f;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100dvh;
+    margin: 0;
+    overflow: hidden;
+  }
+
+  body {
+    background: var(--color-background);
+    color: var(--color-foreground);
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: var(--text-ui-base);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* ZCode clears the UA focus ring so component-local styling is the only
+   * focus affordance. The upstream rule also nukes box-shadow, but that is what
+   * keeps an open menu's shadow while the overlay root owns focus - and this
+   * app's overlay shells do take focus. Outline-only keeps the intent without
+   * deleting overlay elevation. */
+  *:focus,
+  *:focus-visible {
+    outline: none !important;
+  }
+}
+
+/* ZCode promotes the scrollbar treatment to a global native style so panels,
+ * dropdowns and code blocks agree on thickness, track and radius. */
+* {
+  scrollbar-width: auto;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 10px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border-hover);
+  background-clip: content-box;
+}
+
+@layer components {
+  /* Structural frame. ZCode builds depth from background contrast + borders
+   * rather than shadows, so layout regions get no elevation. */
+  .glass {
+    background: var(--color-background-alt);
+    backdrop-filter: blur(12px);
+  }
+
+  /* Primary action: bg-primary + text-primary-foreground (DESIGN.md Buttons). */
+  .btn-primary {
+    @apply text-ui-base font-medium rounded-lg transition-colors;
+    background: var(--color-primary);
+    color: var(--color-primary-foreground);
+  }
+  .btn-primary:hover {
+    opacity: 0.9;
+  }
+
+  /* Outline action: neutral surface, subtle hover. */
+  .btn-outline {
+    @apply text-ui-base font-medium rounded-lg border transition-colors;
+    background: var(--color-surface);
+    border-color: var(--color-border);
+    color: var(--color-foreground);
+  }
+  .btn-outline:hover {
+    background: var(--color-surface-hover);
+  }
+
+  /* Ghost action: transparent until hover. */
+  .btn-ghost {
+    @apply text-ui-base rounded-lg transition-colors;
+    color: var(--color-foreground-subtle);
+  }
+  .btn-ghost:hover {
+    background: var(--color-hover);
+    color: var(--color-foreground);
+  }
+
+  .nav-item {
+    @apply flex items-center gap-2 px-2 h-8 rounded-md text-ui-base cursor-pointer transition-colors;
+    color: var(--color-foreground-subtle);
+  }
+  .nav-item:hover {
+    background: var(--color-menu-hover);
+    color: var(--color-foreground);
+  }
+  .nav-item.active {
+    background: var(--color-selected);
+    color: var(--color-foreground);
+  }
+
+  /* Card surface: sits above the page background, below overlays. */
+  .panel {
+    background: var(--color-card);
+    border: 1px solid var(--color-card-border);
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1 text-ui-xs px-2 h-6 rounded-md border;
+    background: var(--color-tag);
+    border-color: var(--color-border);
+    color: var(--color-foreground-subtle);
+  }
+
+  /* Input semantics: bg-input + border-input-border, hover then focus. */
+  .input-field {
+    @apply w-full rounded-lg px-3 h-8 text-ui-base outline-none transition-colors;
+    background: var(--color-input);
+    border: 1px solid var(--color-input-border);
+    color: var(--color-foreground);
+  }
+  .input-field::placeholder {
+    color: var(--color-foreground-subtlest);
+  }
+  .input-field:hover {
+    border-color: var(--color-input-border-hover);
+  }
+  .input-field:focus {
+    border-color: var(--color-input-border-focused);
+    background: var(--color-input-focused);
+  }
+
+  /* Menu surface. Compact action rows, not miniature buttons. */
+  .menu-surface {
+    @apply p-1 rounded-lg border shadow-md;
+    background: var(--color-menu);
+    border-color: var(--color-popover-border);
+  }
+  .menu-row {
+    @apply flex items-center gap-2 w-full px-2 h-7 rounded-md text-ui-base text-left transition-colors;
+    color: var(--color-foreground);
+  }
+  .menu-row:hover {
+    background: var(--color-menu-hover);
+  }
+  .menu-row[data-selected="true"] {
+    background: var(--color-menu-hover);
+  }
+  /* Menu row that carries a description line. The fixed h-7 of .menu-row cannot
+   * hold two lines, so this variant grows and top-aligns its leading icon. */
+  .menu-row-stacked {
+    @apply flex items-start gap-2 w-full px-2 py-1.5 rounded-md text-left transition-colors;
+    color: var(--color-foreground);
+  }
+  .menu-row-stacked:hover {
+    background: var(--color-menu-hover);
+  }
+  .menu-row-stacked[data-selected="true"] {
+    background: var(--color-menu-hover);
+  }
+  .menu-separator {
+    @apply my-1 h-px;
+    background: var(--color-border);
+  }
+
+  /* Overlay shells. Dialogs are rounded-2xl; the composer shell is an approved
+   * rounded-2xl exception too. Popovers start at rounded-xl. */
+  .dialog-surface {
+    @apply rounded-2xl border shadow-lg;
+    background: var(--color-popover);
+    border-color: var(--color-popover-border);
+  }
+  .popover-surface {
+    @apply rounded-xl border shadow-md;
+    background: var(--color-popover);
+    border-color: var(--color-popover-border);
+  }
+
+  .tooltip-surface {
+    background: var(--color-tooltip);
+    color: var(--color-tooltip-foreground);
+  }
+
+  [data-tip] {
+    position: relative;
+  }
+  [data-tip]::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 3px 7px;
+    background: var(--color-tooltip);
+    color: var(--color-tooltip-foreground);
+    font-size: var(--text-ui-sm);
+    border-radius: 6px;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+    border: 1px solid var(--color-popover-border);
+    z-index: 100;
+  }
+  [data-tip]:hover::after {
+    opacity: 1;
+  }
+}
+
+/* Motion: fast and low-drama (DESIGN.md). Overlay fade/zoom only. */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.animate-fade-in {
+  animation: fade-in 0.12s ease-out;
+}
+
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.animate-scale-in {
+  animation: scale-in 0.12s ease-out;
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-slide-up {
+  animation: slide-up 0.14s ease-out;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+.animate-pulse-dot {
+  animation: pulse-dot 1.6s ease-in-out infinite;
+}
+
+.titlebar-drag {
+  -webkit-app-region: drag;
+}
+.titlebar-drag button,
+.titlebar-drag a {
+  -webkit-app-region: no-drag;
+}
+
+/* Streaming caret at the end of a growing assistant reply. */
+.stream-caret::after {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 14px;
+  margin-left: 2px;
+  vertical-align: -2px;
+  background: var(--color-brand);
+  animation: pulse-dot 1s ease-in-out infinite;
+}

@@ -1,0 +1,28 @@
+[package]
+name = "lvaigent"
+version = "0.1.0"
+description = "lvaigent - AI Chat with Duck.ai models"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+name = "lvaigent_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# `unstable` is required for `Window::add_child` and `Manager::get_webview`, which
+# are what let the duck.ai pane live INSIDE the main window instead of as a second
+# top-level window. Without it the browser is a separate window that floats above
+# other apps. Gated by Tauri behind this flag rather than removed, so enabling it
+# is the supported path for this API.
+tauri = { version = "2", features = ["unstable"] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
