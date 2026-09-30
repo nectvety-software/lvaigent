@@ -17,8 +17,14 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 // The PoW transport needs a challenge hash and a durable-stream ticket before it
 // will build a payload; stub both so the test can reach the request itself.
+// `solveFailure` reproduces the other way the direct transport dies: duck.ai's
+// status call refusing to hand out a challenge at all.
+let solveFailure: string | null = null;
 vi.mock("../lib/duckai", () => ({
-  ensureVqdHash: async () => "test-hash",
+  ensureVqdHash: async () => {
+    if (solveFailure) throw new Error(solveFailure);
+    return "test-hash";
+  },
   generateDurableStream: async () => ({
     messageId: "m1",
     conversationId: "c1",
@@ -26,7 +32,6 @@ vi.mock("../lib/duckai", () => ({
   }),
   getFeSignals: () => ({}),
   invalidateVqdHash: () => {},
-  setManualVqdHash: () => {},
   getCachedVqdInfo: () => null,
 }));
 
@@ -55,7 +60,13 @@ vi.mock("../lib/api-chat", () => ({
 }));
 
 import { useStore, resetSpaThread } from "./index";
-import { MAX_TOOL_REFUSAL_RETRY_TURNS } from "../lib/agent";
+import {
+  flushParkedRetry,
+  getBridgeWatcherStatus,
+  stopBridgeWatcherForTests,
+} from "../lib/bridge-watcher";
+import { MAX_TOOL_REFUSAL_RETRY_TURNS, SPA_MESSAGE_LIMIT } from "../lib/agent";
+import { MAX_NAMED_FILE_CHARS } from "../lib/user-signals";
 import { ALL_PROMPT_SECTION_IDS, ALL_SKILL_IDS } from "../lib/skills";
 import type { Conversation } from "../types";
 
@@ -714,3 +725,516 @@ describe("a standard API provider gets a real system role, not a folded prompt",
   });
 });
 
+/**
+ * duck.ai's anti-bot refuses the direct PoW transport (`HTTP 418 …
+ * ERR_CHALLENGE`, `429`, or no challenge handed out at all), so a send has to
+ * find its way back to the bridge. Six separate bugs lived on that path: the
+ * retry re-entered `sendDuckChat` as a brand-new turn (the chat showed the
+ * user's message twice and the first bubble froze on its placeholder), the
+ * bridge was given a single 1.5s recheck — not enough for a page that is still
+ * reloading — giving up printed duck.ai's JSON or Rust's transport text as if it
+ * were the answer, a send that gave up told the user to retype instead of
+ * parking itself, a captcha fell through to PoW (which cannot solve one), and
+ * the two fallbacks handed the turn back to each other without ever stopping.
+ */
+describe("a PoW refusal that falls back to the bridge keeps exactly one turn", () => {
+  // Verbatim shape of the observed failure body.
+  const CHALLENGE =
+    'Error: HTTP 418 I\'m a teapot: {"action":"error","status":418,"type":"ERR_CHALLENGE","overrideCode":"3501"}';
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    channels.length = 0;
+    apiCapture.mockReset();
+    solveFailure = null;
+    resetSpaThread();
+    // Also drops any send parked by the previous case, so `willRetry` below
+    // reports this failure rather than an earlier one.
+    stopBridgeWatcherForTests();
+    useStore.setState({
+      // A provider list left over from the API block would win here:
+      // `activeProvider()` falls back to `providers[0]`, and that would send
+      // these duck.ai transport tests down the standard-API path.
+      providers: [],
+      settings: {
+        ...useStore.getState().settings,
+        selectedProvider: "provider_duckai",
+        disabledPrompts: [],
+        disabledSkills: [],
+        agentMode: "build",
+      },
+    });
+  });
+
+  /**
+   * Refuse every PoW send, and let the bridge answer only after its `N`th
+   * health check.
+   *
+   * The count is the point: a single recheck can never see a bridge that is
+   * healthy on check 3, which is how a page that was still reloading got
+   * reported as "bridge chưa sẵn sàng" while it was in fact fine.
+   */
+  function refusePoW(bridgeComesBack: boolean, checksToHealth = 4): { text: string }[] {
+    const sends: { text: string }[] = [];
+    let checks = 0;
+    fakeDriver = bridgeComesBack
+      ? {
+          get healthy() {
+            checks++;
+            return checks >= checksToHealth;
+          },
+          send: async (
+            text: string,
+            opts: { fresh: boolean; onProgress?: (partial: string) => void }
+          ) => {
+            sends.push({ text });
+            // The real driver streams through onProgress; without that call the
+            // bubble would stay empty and the assertion below would test
+            // nothing but the message count.
+            opts.onProgress?.("đã xong qua bridge");
+            return { text: "đã xong qua bridge", errors: [], actions: [] };
+          },
+        }
+      : null;
+    let streamCalls = 0;
+    invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      // The context builder reads AGENTS.md through these; a null result throws
+      // before the send ever reaches the transport.
+      if (cmd === "read_file_content") return Promise.resolve(AGENT_SRC);
+      if (cmd === "read_file_lines") {
+        return Promise.resolve({
+          content: AGENT_SRC,
+          total_lines: 1,
+          start_line: 0,
+          end_line: 1,
+          truncated: false,
+          path: String(args?.path ?? ""),
+        });
+      }
+      if (cmd === "duckchat_stream") {
+        streamCalls++;
+        return Promise.reject(new Error(CHALLENGE));
+      }
+      return Promise.resolve(null);
+    });
+    return sends;
+  }
+
+  /** How many PoW requests this send burned before the transport gave up. */
+  function powAttempts(): number {
+    return invokeMock.mock.calls.filter((c) => c[0] === "duckchat_stream").length;
+  }
+
+  function turn(): { users: string[]; assistants: { content: string; isStreaming?: boolean }[] } {
+    const msgs = useStore.getState().conversations[0].messages;
+    return {
+      users: msgs.filter((m) => m.role === "user").map((m) => m.content),
+      assistants: msgs
+        .filter((m) => m.role === "assistant")
+        .map((m) => ({ content: m.content, isStreaming: m.isStreaming })),
+    };
+  }
+
+  it("waits for a late bridge, then reuses the original turn and bubble", async () => {
+    const convId = seed();
+    // Health arrives on the 8th check: attempt 1 spends 2 of them (the first
+    // read plus its single recheck), the two PoW burns add none, and the bridge
+    // retry only reaches 8 if it probes the full budget. With the old
+    // single-recheck retry the send stops at 4 and reports "bridge chưa sẵn
+    // sàng" for a page that was about to answer.
+    const sends = refusePoW(true, 8);
+
+    await useStore
+      .getState()
+      .sendDuckChat(convId, "Trả lời đúng một từ: ok");
+
+    expect(powAttempts(), "PoW was not burned exactly twice before the fallback").toBe(2);
+    expect(sends, "the retry never reached the bridge").toHaveLength(1);
+    const { users, assistants } = turn();
+    expect(users, "the retried send appended a second copy of the user turn").toEqual([
+      "Trả lời đúng một từ: ok",
+    ]);
+    expect(assistants, "the retry opened a second assistant bubble").toHaveLength(1);
+    expect(assistants[0].content).toBe("đã xong qua bridge");
+    expect(assistants[0].isStreaming).toBeFalsy();
+  }, 30000);
+
+  /** Poll the store until `pred` holds, so a fire-and-forget resend can settle. */
+  async function waitFor(pred: () => boolean, ms = 8000): Promise<boolean> {
+    for (let waited = 0; waited < ms; waited += 40) {
+      if (pred()) return true;
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    return pred();
+  }
+
+  /**
+   * The captcha path, end to end.
+   *
+   * duck.ai answers the bridge send with an image challenge, so the turn is
+   * parked and floated — NOT handed to the PoW transport, which cannot solve a
+   * captcha and only answers 418. The watcher's resend then carries what the
+   * user actually wrote: parking the composed SPA message instead folded the
+   * system prompt and the codebase map into a chat bubble twice.
+   */
+  it("parks a captcha-blocked turn, then resends the user's own text once", async () => {
+    const convId = seed();
+    const USER = "sentinel_turn_4f9c";
+    const wire: string[] = [];
+    let calls = 0;
+    fakeDriver = {
+      healthy: true,
+      send: async (
+        text: string,
+        opts: { fresh: boolean; onProgress?: (partial: string) => void }
+      ) => {
+        wire.push(text);
+        calls++;
+        if (calls === 1) return { text: "", errors: ["captcha"], actions: [] };
+        opts.onProgress?.("đã xong sau captcha");
+        return { text: "đã xong sau captcha", errors: [], actions: [] };
+      },
+    };
+    invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "read_file_content") return Promise.resolve(AGENT_SRC);
+      if (cmd === "read_file_lines") {
+        return Promise.resolve({
+          content: AGENT_SRC,
+          total_lines: 1,
+          start_line: 0,
+          end_line: 1,
+          truncated: false,
+          path: String(args?.path ?? ""),
+        });
+      }
+      // Only reachable if a captcha-blocked send falls through to PoW.
+      if (cmd === "duckchat_stream") return Promise.reject(new Error(CHALLENGE));
+      return Promise.resolve(null);
+    });
+
+    await useStore.getState().sendDuckChat(convId, USER);
+
+    expect(calls, "the captcha send did not reach the bridge").toBe(1);
+    expect(powAttempts(), "a captcha-blocked send burned the PoW transport").toBe(0);
+    const blocked = turn();
+    expect(blocked.users).toEqual([USER]);
+    expect(blocked.assistants).toHaveLength(1);
+    expect(blocked.assistants[0].content).toContain("image challenge");
+    expect(getBridgeWatcherStatus().willRetry, "the captcha-blocked send was not parked").toBe(
+      true
+    );
+
+    // Challenge solved: the watcher's resend goes out on the bridge.
+    await flushParkedRetry("captcha");
+    const delivered = await waitFor(
+      () => turn().assistants[0]?.content === "đã xong sau captcha"
+    );
+    expect(delivered, "the parked send was never resent").toBe(true);
+
+    expect(calls, "the resend was not a single bridge send").toBe(2);
+    const { users, assistants } = turn();
+    expect(users, "the resent send appended a second user bubble").toEqual([USER]);
+    expect(assistants, "the resent send opened a second assistant bubble").toHaveLength(1);
+    const resent = wire[wire.length - 1];
+    expect(
+      resent.split(USER).length - 1,
+      "the resent turn carried the user text more than once — a parked composed prompt"
+    ).toBe(1);
+    expect(
+      getBridgeWatcherStatus().willRetry,
+      "a delivered send stayed parked and would fire a third time"
+    ).toBe(false);
+    // The floated bridge is tucked away again once the turn is out.
+    expect(
+      invokeMock.mock.calls.some(
+        (c) => c[0] === "show_bridge_window" && (c[1] as { show?: boolean })?.show === false
+      ),
+      "the auto-docked bridge window stayed floated after a delivered send"
+    ).toBe(true);
+  }, 40000);
+
+  /**
+   * The cascade must stop after one pass.
+   *
+   * A `preferBridge` run is the end of the chain by definition — PoW already
+   * refused this turn — so a second bridge failure parks the send. Before that
+   * bound the two fallbacks handed the turn back to each other, and every hop
+   * cost another PoW 418 plus a bridge probe.
+   */
+  it("parks a bridge-only retry that fails again instead of restarting the cascade", async () => {
+    const convId = seed();
+    const USER = "Trả lời đúng một từ: ok";
+    let calls = 0;
+    fakeDriver = {
+      healthy: true,
+      send: async () => {
+        calls++;
+        // A wedged SPA thread: no captcha, no reply — the transport itself died.
+        return { text: "", errors: ["bridge timeout"], actions: [] };
+      },
+    };
+    invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "read_file_content") return Promise.resolve(AGENT_SRC);
+      if (cmd === "read_file_lines") {
+        return Promise.resolve({
+          content: AGENT_SRC,
+          total_lines: 1,
+          start_line: 0,
+          end_line: 1,
+          truncated: false,
+          path: String(args?.path ?? ""),
+        });
+      }
+      if (cmd === "duckchat_stream") return Promise.reject(new Error(CHALLENGE));
+      return Promise.resolve(null);
+    });
+
+    await useStore.getState().sendDuckChat(convId, USER);
+
+    expect(calls, "bridge→PoW→bridge did not stop after one pass").toBe(2);
+    expect(powAttempts(), "the refused PoW transport was attempted more than once").toBe(2);
+    const { users, assistants } = turn();
+    expect(users).toEqual([USER]);
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0].content).toContain("418");
+    expect(assistants[0].content).not.toContain("ERR_CHALLENGE");
+    expect(getBridgeWatcherStatus().willRetry, "the failed send was not parked").toBe(true);
+  }, 40000);
+
+  /**
+   * The failure seen live on the installed build: duck.ai's status call handed
+   * back no challenge to solve, so the PoW transport died before it even sent.
+   * That text is a transport detail, not an answer — it must never be printed in
+   * the chat as if the assistant had said it.
+   */
+  it("parks a send whose PoW challenge was never issued", async () => {
+    const convId = seed();
+    solveFailure = "No x-vqd-hash-1 header in status response";
+    refusePoW(false);
+
+    await useStore.getState().sendDuckChat(convId, "Trả lời đúng một từ: ok");
+
+    const { users, assistants } = turn();
+    expect(users).toEqual(["Trả lời đúng một từ: ok"]);
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0].content).toContain("418");
+    expect(assistants[0].content).not.toContain("x-vqd");
+    expect(getBridgeWatcherStatus().willRetry, "the failed send was not parked").toBe(true);
+  }, 40000);
+
+  it("parks the send and floats the bridge when the bridge never comes back", async () => {
+    const convId = seed();
+    refusePoW(false);
+
+    await useStore.getState().sendDuckChat(convId, "Trả lời đúng một từ: ok");
+
+    const { users, assistants } = turn();
+    expect(users).toHaveLength(1);
+    expect(assistants).toHaveLength(1);
+    // The whole point of the fix: no raw duck.ai JSON in the chat.
+    expect(assistants[0].content).toContain("418");
+    expect(assistants[0].content).not.toContain("ERR_CHALLENGE");
+    expect(assistants[0].isStreaming).toBeFalsy();
+    // And the user is not asked to retype it: the send is parked for the
+    // watcher, and the bridge window is opened so the cause is visible.
+    expect(getBridgeWatcherStatus().willRetry, "the failed send was not parked").toBe(true);
+    expect(
+      invokeMock.mock.calls.some((c) => c[0] === "show_bridge_window"),
+      "the bridge window was never floated"
+    ).toBe(true);
+  }, 40000);
+});
+
+/**
+ * The reason the cascade above still produced a dead send on the installed
+ * build: duck.ai's composer is a hard 16,000-character field, and the folded
+ * first turn (prompt + codebase map + AGENTS.md + pre-read files) walked past it
+ * — the page answered "Please try a shorter message. 17042/16000", the bridge
+ * reported a generic failure, and the PoW fallback came back with the 418
+ * notice. So the length has to be handled where the turn is composed, and a
+ * message that can never fit must be refused before either transport runs.
+ */
+describe("a turn bound for duck.ai never exceeds the composer limit", () => {
+  /** Three files at `MAX_NAMED_FILE_CHARS`, i.e. the shape that hit 17,042. */
+  const NAMED = ["src/a.ts", "src/b.ts", "src/c.ts"].map((path) => ({
+    path,
+    content: `// ${path}\n` + "y".repeat(MAX_NAMED_FILE_CHARS),
+  }));
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    channels.length = 0;
+    apiCapture.mockReset();
+    solveFailure = null;
+    resetSpaThread();
+    stopBridgeWatcherForTests();
+    useStore.setState({
+      providers: [],
+      settings: {
+        ...useStore.getState().settings,
+        selectedProvider: "provider_duckai",
+        disabledPrompts: [],
+        disabledSkills: [],
+        agentMode: "build",
+      },
+    });
+  });
+
+  /** A healthy bridge that records everything typed into it. */
+  function recordSends(answer = "xong"): string[] {
+    const sends: string[] = [];
+    fakeDriver = {
+      healthy: true,
+      send: async (
+        text: string,
+        opts: { fresh: boolean; onProgress?: (partial: string) => void }
+      ) => {
+        sends.push(text);
+        opts.onProgress?.(answer);
+        return { text: answer, errors: [], actions: [] };
+      },
+    };
+    return sends;
+  }
+
+  function serveNamedFiles(): void {
+    invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      const path = String(args?.path ?? "");
+      if (cmd === "read_file_content") {
+        const hit = NAMED.find((f) => path.endsWith(f.path));
+        return Promise.resolve(hit?.content ?? "");
+      }
+      if (cmd === "read_file_lines") {
+        const hit = NAMED.find((f) => path.endsWith(f.path));
+        return Promise.resolve({
+          content: hit?.content ?? "",
+          total_lines: 1,
+          start_line: 0,
+          end_line: 1,
+          truncated: false,
+          path,
+        });
+      }
+      return Promise.resolve(null);
+    });
+  }
+
+  function projectWithNamedFiles(): void {
+    useStore.setState({
+      currentProject: {
+        id: "p",
+        name: "proj",
+        path: ROOT,
+        files: NAMED.map((f) => ({ name: f.path, path: f.path, is_dir: false })),
+        openedAt: 1,
+      },
+    });
+  }
+
+  /** What the chat shows for this conversation. */
+  function turnOf(id: string): {
+    users: string[];
+    assistants: { content: string; isStreaming?: boolean }[];
+  } {
+    const msgs = useStore.getState().conversations.find((c) => c.id === id)!.messages;
+    return {
+      users: msgs.filter((m) => m.role === "user").map((m) => m.content),
+      assistants: msgs
+        .filter((m) => m.role === "assistant")
+        .map((m) => ({ content: m.content, isStreaming: m.isStreaming })),
+    };
+  }
+
+  it("shortens a turn that names three full-size files instead of failing", async () => {
+    const convId = seed();
+    projectWithNamedFiles();
+    serveNamedFiles();
+    const sends = recordSends();
+
+    await useStore.getState().sendDuckChat(convId, "sửa src/a.ts src/b.ts src/c.ts cho gọn");
+
+    expect(sends, "the send never reached the bridge").toHaveLength(1);
+    expect(
+      sends[0].length,
+      "duck.ai would have answered 'Please try a shorter message.'"
+    ).toBeLessThanOrEqual(SPA_MESSAGE_LIMIT);
+    // The user's own words and the pre-read code the request is about survive;
+    // the orientation sections are what give way.
+    expect(sends[0]).toContain("sửa src/a.ts src/b.ts src/c.ts cho gọn");
+    expect(sends[0]).toContain(NAMED[0].content.slice(0, 120));
+    expect(sends[0]).toContain('<tool name="write_file"');
+  });
+
+  it("refuses a message that cannot fit even with no context, and sends nothing", async () => {
+    const convId = seed();
+    serveNamedFiles();
+    const sends = recordSends();
+    const tooLong = "d".repeat(SPA_MESSAGE_LIMIT);
+
+    await useStore.getState().sendDuckChat(convId, tooLong);
+
+    expect(sends, "a turn that cannot fit was typed into duck.ai anyway").toHaveLength(0);
+    expect(
+      invokeMock.mock.calls.filter((c) => c[0] === "duckchat_stream"),
+      "a turn that cannot fit was handed to the PoW transport"
+    ).toHaveLength(0);
+    const { users, assistants } = turnOf(convId);
+    expect(users).toEqual([tooLong]);
+    expect(assistants[0].content).toContain("quá dài");
+    expect(assistants[0].isStreaming).toBeFalsy();
+    // Nothing to resend later: this failure is not a transport problem.
+    expect(getBridgeWatcherStatus().willRetry, "an unsendable message got parked").toBe(false);
+  });
+
+  it("keeps a tool round inside the limit when one result is oversized", async () => {
+    // `capToolMessage` allows 20,000 characters per tool message, which is more
+    // than the composer takes — so round 2 used to die on the same limit as the
+    // first turn, one step later.
+    const convId = seed();
+    serveNamedFiles();
+    invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      const path = String(args?.path ?? "");
+      if (cmd === "read_file_content") return Promise.resolve("");
+      if (cmd === "read_file_lines") {
+        return Promise.resolve({
+          content: "r".repeat(20_000),
+          total_lines: 400,
+          start_line: 0,
+          end_line: 400,
+          truncated: false,
+          path,
+        });
+      }
+      return Promise.resolve(null);
+    });
+    const sends: string[] = [];
+    let calls = 0;
+    fakeDriver = {
+      healthy: true,
+      send: async (
+        text: string,
+        opts: { fresh: boolean; onProgress?: (partial: string) => void }
+      ) => {
+        sends.push(text);
+        calls++;
+        if (calls === 1) {
+          return { text: '<tool name="read_file" path="src/big.ts" />', errors: [], actions: [] };
+        }
+        opts.onProgress?.("xong");
+        return { text: "xong", errors: [], actions: [] };
+      },
+    };
+
+    await useStore.getState().sendDuckChat(convId, "đọc src/big.ts");
+
+    expect(sends.length, "the tool round never came back to the bridge").toBe(2);
+    expect(
+      sends[1].length,
+      "a full tool result was typed into a composer that cannot take it"
+    ).toBeLessThanOrEqual(SPA_MESSAGE_LIMIT);
+    expect(
+      sends[1],
+      "the clamped round lost the tool protocol, which is what keeps tools live"
+    ).toContain('<tool name="write_file"');
+  });
+});

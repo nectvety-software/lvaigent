@@ -1,7 +1,9 @@
 import { CheckCircle, XCircle, Info, X } from "lucide-react";
 import { useStore } from "../store";
+import { t, useLang } from "../lib/i18n";
 
 export default function Toast() {
+  useLang();
   const { toasts, removeToast } = useStore();
 
   if (toasts.length === 0) return null;
@@ -25,6 +27,7 @@ export default function Toast() {
           <span className="text-foreground">{toast.message}</span>
           <button
             onClick={() => removeToast(toast.id)}
+            aria-label={t("Đóng thông báo")}
             className="flex items-center justify-center size-6 rounded-md hover:bg-hover text-foreground-subtlest hover:text-foreground transition-colors ml-1"
           >
             <X className="size-3.5" />

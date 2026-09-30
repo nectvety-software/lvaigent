@@ -18,6 +18,7 @@ import {
   type CustomCommand,
   type FrontmatterIssue,
 } from "../lib/custom-commands";
+import { t, tf, useLang } from "../lib/i18n";
 
 interface CommandsManagerProps {
   onClose: () => void;
@@ -46,6 +47,7 @@ function CommandEditor({
   onSave: (name: string, body: string) => void;
   onCancel: () => void;
 }) {
+  useLang();
   const [name, setName] = useState(initialName);
   const [body, setBody] = useState(initialBody);
   const [saving, setSaving] = useState(false);
@@ -90,11 +92,11 @@ function CommandEditor({
         >
           <div className="font-medium flex items-center gap-1.5">
             <AlertTriangle size={11} />
-            {blocking ? "Frontmatter lỗi — chưa thể lưu" : "Cảnh báo frontmatter"}
+            {blocking ? t("Frontmatter lỗi — chưa thể lưu") : t("Cảnh báo frontmatter")}
           </div>
           {issues.map((iss, i) => (
             <div key={i} className="font-mono">
-              {iss.line ? `Dòng ${iss.line}: ` : ""}
+              {iss.line ? tf("Dòng {line}: ", { line: iss.line }) : ""}
               {iss.message}
             </div>
           ))}
@@ -102,14 +104,14 @@ function CommandEditor({
       )}
       <div className="flex items-center justify-between">
         <span className="text-ui-xs text-foreground-subtlest">
-          $ARGUMENTS = args sau lệnh · $1, $2… = từng từ
+          {t("$ARGUMENTS = args sau lệnh · $1, $2… = từng từ")}
         </span>
         <div className="flex gap-1.5">
           <button
             onClick={onCancel}
             className="px-3 py-1.5 rounded-lg text-ui-sm border border-border text-foreground-subtle hover:text-foreground hover:bg-surface-hover transition-colors"
           >
-            Hủy
+            {t("Hủy")}
           </button>
           <button
             onClick={() => void handleSave()}
@@ -117,7 +119,7 @@ function CommandEditor({
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-ui-sm font-medium bg-primary text-primary-foreground hover:brightness-110 transition-all disabled:opacity-30"
           >
             <Check size={12} />
-            Lưu
+            {t("Lưu")}
           </button>
         </div>
       </div>
@@ -126,6 +128,7 @@ function CommandEditor({
 }
 
 export default function CommandsManager({ onClose }: CommandsManagerProps) {
+  useLang();
   const currentProject = useStore((s) => s.currentProject);
   const reloadProjectData = useStore((s) => s.reloadProjectData);
   const addToast = useStore((s) => s.addToast);
@@ -156,21 +159,21 @@ export default function CommandsManager({ onClose }: CommandsManagerProps) {
     if (!currentProject) return;
     try {
       await invoke<number>("write_file", { path: cmdPath(name), content: body, root: null });
-      addToast(`Đã lưu /${name}`, "success");
+      addToast(tf("Đã lưu /{name}", { name }), "success");
       setEditing(null);
       await refresh();
     } catch (e) {
-      addToast(`Không lưu được lệnh: ${e}`, "error");
+      addToast(tf("Không lưu được lệnh: {err}", { err: String(e) }), "error");
     }
   };
 
   const handleDelete = async (cmd: CustomCommand) => {
     try {
       await invoke("delete_file", { path: cmd.path, root: null });
-      addToast(`Đã xóa /${cmd.name}`, "success");
+      addToast(tf("Đã xóa /{name}", { name: cmd.name }), "success");
       await refresh();
     } catch (e) {
-      addToast(`Không xóa được: ${e}`, "error");
+      addToast(tf("Không xóa được: {err}", { err: String(e) }), "error");
     }
   };
 
@@ -198,7 +201,7 @@ export default function CommandsManager({ onClose }: CommandsManagerProps) {
             <button
               onClick={() => void refresh()}
               className="p-1.5 rounded-lg hover:bg-surface-hover text-foreground-subtlest hover:text-foreground transition-colors"
-              title="Đọc lại từ đĩa"
+              title={t("Đọc lại từ đĩa")}
             >
               <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />
             </button>
@@ -215,7 +218,7 @@ export default function CommandsManager({ onClose }: CommandsManagerProps) {
         <div className="flex-1 overflow-y-auto p-3 space-y-2 modal-scroll">
           {!currentProject ? (
             <div className="text-center text-ui-sm text-foreground-subtlest py-10">
-              Mở một project để quản lý custom commands.
+              {t("Mở một project để quản lý custom commands.")}
             </div>
           ) : editing ? (
             <CommandEditor
@@ -232,14 +235,14 @@ export default function CommandsManager({ onClose }: CommandsManagerProps) {
                 className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border border-dashed border-border text-ui-base text-foreground-subtle hover:text-brand hover:border-brand/40 transition-colors"
               >
                 <Plus size={15} />
-                Tạo lệnh mới
+                {t("Tạo lệnh mới")}
               </button>
               {commands.length === 0 ? (
                 <div className="text-center text-ui-sm text-foreground-subtlest py-8">
-                  Chưa có custom command nào trong project này.
+                  {t("Chưa có custom command nào trong project này.")}
                   <br />
-                  Tạo file <span className="font-mono">.duckchat/commands/&lt;tên&gt;.md</span> hoặc
-                  bấm "Tạo lệnh mới".
+                  {t("Tạo file ")}<span className="font-mono">.duckchat/commands/&lt;tên&gt;.md</span>{" "}
+                  {tf("hoặc bấm \"{btn}\".", { btn: t("Tạo lệnh mới") })}
                 </div>
               ) : (
                 commands.map((cmd) => (
@@ -257,14 +260,14 @@ export default function CommandsManager({ onClose }: CommandsManagerProps) {
                     <button
                       onClick={() => setEditing({ mode: "edit", cmd })}
                       className="p-1.5 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-surface-hover text-foreground-subtlest hover:text-foreground transition-all"
-                      title="Sửa"
+                      title={t("Sửa")}
                     >
                       <Pencil size={13} />
                     </button>
                     <button
                       onClick={() => void handleDelete(cmd)}
                       className="p-1.5 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-destructive/15 text-foreground-subtlest hover:text-destructive transition-all"
-                      title="Xóa file"
+                      title={t("Xóa file")}
                     >
                       <Trash2 size={13} />
                     </button>

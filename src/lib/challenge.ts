@@ -1,18 +1,18 @@
-// Duck.ai PoW challenge solver, replicated from the reference client
-// (p2d-duck 1.3.1) which solves in a V8 sandbox with a full set of DOM stubs
-// -- NOT against the real WebView DOM. The server's challenge fingerprints a
-// *fixed* fake browser environment, so solving against WebView's real DOM
-// (different geometry, webdriver=true, etc.) produces hashes the backend
-// rejects with 418 ERR_CHALLENGE.
+// Duck.ai PoW challenge solver.
 //
-// Reference algorithm (challenge.py + stubs.js):
+// The server hands out a base64 obfuscated async IIFE that probes the
+// execution environment and returns {server_hashes, client_hashes, signals,
+// meta}. `client_hashes` is [UA, <sum of browser-fidelity probes>, ...] and
+// the backend re-computes what a genuine Chromium would have produced; any
+// divergence is answered with 418 ERR_CHALLENGE.
+//
+// Algorithm:
 //  1. decode base64 challenge -> JS expression.
-//  2. build a sandbox scope from stubs.js (fixed geometry/UA/DOM), substitute
-//     __DDG_REAL_UA__ = the UA used on the wire.
-//  3. eval sandbox + challenge, await the promise, read {server_hashes,
-//     client_hashes, signals, meta}.
-//  4. OVERRIDE client_hashes[0] with the wire UA, then b64(sha256) each entry.
-//  5. envelope JSON -> base64 -> X-Vqd-Hash-1.
+//  2. eval it in a sandbox scope (stubs.js-equivalent DOM fakes) whose HTML
+//     handling is pre-computed with the platform parser, then await the
+//     promise.
+//  3. OVERRIDE client_hashes[0] with the wire UA, then b64(sha256) each entry.
+//  4. envelope JSON -> base64 -> X-Vqd-Hash-1.
 
 const STUBS = `
 var __ua = __DDG_REAL_UA__;
@@ -277,6 +277,58 @@ function evaluateSandbox(src: string, ua: string, htmlLookup: Record<string, { h
   });
 }
 
+/**
+ * Run the challenge inside a fresh same-origin iframe realm and return its
+ * result. This is the preferred path: the app ships in a Chromium WebView, so
+ * a real realm answers every v:4 probe (native `toString`, `[object Window]`,
+ * `this === window`, `NodeList`, the DOM prototype chain, layout boxes)
+ * exactly as genuine Chrome does — which is what the backend recomputes.
+ *
+ * The realm's own UA is irrelevant: `client_hashes[0]` is overridden with the
+ * wire UA before hashing.
+ */
+function evaluateInRealm(src: string): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    if (typeof document === "undefined" || !document.body) {
+      reject(new Error("no DOM realm available"));
+      return;
+    }
+    const frame = document.createElement("iframe");
+    frame.style.cssText =
+      "position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;border:0;";
+    let settled = false;
+    const cleanup = () => {
+      if (settled) return;
+      settled = true;
+      frame.remove();
+    };
+    document.body.appendChild(frame);
+    const win = frame.contentWindow as (Window & { eval?: (code: string) => unknown }) | null;
+    if (!win || typeof win.eval !== "function") {
+      cleanup();
+      reject(new Error("iframe realm is not evaluable"));
+      return;
+    }
+    try {
+      // The challenge is an async IIFE expression; eval inside the realm makes
+      // every global it touches (window, document, navigator) the realm's own.
+      Promise.resolve(win.eval(`(${src})`)).then(
+        (v) => {
+          cleanup();
+          resolve(v);
+        },
+        (e) => {
+          cleanup();
+          reject(e instanceof Error ? e : new Error(String(e)));
+        }
+      );
+    } catch (e) {
+      cleanup();
+      reject(e instanceof Error ? e : new Error(String(e)));
+    }
+  });
+}
+
 /** Pull quoted HTML-ish strings out of the challenge JS, like p2d. */
 function extractHtmlInputs(js: string): string[] {
   const found: string[] = [];
@@ -298,7 +350,12 @@ function normalizeHtml(s: string): { html: string; count: number } {
   try {
     const doc = new DOMParser().parseFromString(s, "text/html");
     const body = doc.body;
-    const count = body.children.length;
+    // The challenge asks the *element* it just assigned this HTML to for
+    // `querySelectorAll('*').length` — that is every descendant, not the top
+    // level children. `<div><div></div><div></div` normalises to one child but
+    // three descendants; counting children made every HTML probe come out
+    // short and the backend answered 418 ERR_CHALLENGE.
+    const count = body.querySelectorAll("*").length;
     return { html: body.innerHTML, count };
   } catch {
     return { html: s, count: 0 };
@@ -357,7 +414,14 @@ export async function solveChallenge(
 
   let obj: Record<string, unknown>;
   try {
-    const v = await evaluateSandbox(src, userAgent, htmlLookup);
+    let v: unknown;
+    try {
+      v = await evaluateInRealm(src);
+    } catch {
+      // No evaluable realm (locked-down CSP / headless test runner): the stub
+      // scope is still better than not answering at all.
+      v = await evaluateSandbox(src, userAgent, htmlLookup);
+    }
     const rec = v as Record<string, unknown>;
     if (!rec || typeof rec !== "object" || !Array.isArray(rec.client_hashes)) {
       throw new Error("challenge did not return {client_hashes}");

@@ -6,6 +6,7 @@ import { useStore } from "../store";
 import { SKILLS, PROMPT_SECTIONS, isSkillEnabled, isPromptEnabled } from "../lib/skills";
 import { parseSkillsMarkdown, MAX_SKILL_BLOCK_CHARS } from "../lib/imported-skills";
 import type { ImportedSkill } from "../types";
+import { t, tf, useLang } from "../lib/i18n";
 
 /**
  * A row of label + description + switch, used by every toggle in this tab.
@@ -61,7 +62,7 @@ const MARKDOWN_FILTERS = [{ name: "Markdown", extensions: ["md", "markdown"] }];
  * back paths, and duck.ai's own file inputs are not what we are importing here.
  */
 async function readMarkdownFiles(): Promise<{ path: string; raw: string }[]> {
-  const picked = await openDialog({ multiple: true, title: "Chọn file Skills & Prompt (.md)", filters: MARKDOWN_FILTERS });
+  const picked = await openDialog({ multiple: true, title: t("Chọn file Skills & Prompt (.md)"), filters: MARKDOWN_FILTERS });
   if (!picked) return [];
   const paths = (Array.isArray(picked) ? picked : [picked]).filter((p): p is string => typeof p === "string" && p.trim().length > 0);
   const out: { path: string; raw: string }[] = [];
@@ -78,6 +79,7 @@ export function toImportedSkills(files: { path: string; raw: string }[]): Import
 }
 
 export default function SkillsPromptSection() {
+  useLang();
   const settings = useStore((s) => s.settings);
   const setSkillEnabled = useStore((s) => s.setSkillEnabled);
   const setPromptSectionEnabled = useStore((s) => s.setPromptSectionEnabled);
@@ -112,13 +114,13 @@ export default function SkillsPromptSection() {
       if (picked.length === 0) return;
       const skills = toImportedSkills(picked);
       if (skills.length === 0) {
-        addToast("File .md rỗng — không có block nào để import", "error");
+        addToast(t("File .md rỗng — không có block nào để import"), "error");
         return;
       }
       importSkills(skills);
-      addToast(`Đã import ${skills.length} block từ ${picked.length} file .md`, "success");
+      addToast(tf("Đã import {n} block từ {files} file .md", { n: skills.length, files: picked.length }), "success");
     } catch (e) {
-      addToast(`Import thất bại: ${e}`, "error");
+      addToast(tf("Import thất bại: {err}", { err: String(e) }), "error");
     } finally {
       setImporting(false);
     }
@@ -127,11 +129,11 @@ export default function SkillsPromptSection() {
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-ui-base font-semibold text-foreground">Skills &amp; Prompt</h3>
+        <h3 className="text-ui-base font-semibold text-foreground">{t("Skills & Prompt")}</h3>
         <p className="text-ui-sm text-foreground-subtle mt-1">
-          Chọn agent được dùng công cụ nào và phần nào của prompt được gửi đi.
-          Tắt một skill sẽ bỏ nó khỏi prompt <span className="text-foreground">và</span>{" "}
-          chặn thực thi — model có tự phát lệnh cũng bị từ chối.
+          {t("Chọn agent được dùng công cụ nào và phần nào của prompt được gửi đi. Tắt một skill sẽ bỏ nó khỏi prompt")}{" "}
+          <span className="text-foreground">{t("và")}</span>{" "}
+          {t("chặn thực thi — model có tự phát lệnh cũng bị từ chối.")}
         </p>
       </div>
 
@@ -139,20 +141,20 @@ export default function SkillsPromptSection() {
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-1.5 text-ui-sm font-semibold text-foreground-subtle uppercase tracking-wider">
             <Wrench className="size-3.5" />
-            Skills ({skillsOn} / {SKILLS.length})
+            {tf("Skills ({on} / {total})", { on: skillsOn, total: SKILLS.length })}
           </div>
           <div className="flex items-center gap-1">
             <button
               onClick={() => setAllSkillsEnabled(true)}
               className="h-6 px-2 rounded-md text-ui-xs text-foreground-subtle hover:bg-hover hover:text-foreground transition-colors"
             >
-              Bật tất cả
+              {t("Bật tất cả")}
             </button>
             <button
               onClick={() => setAllSkillsEnabled(false)}
               className="h-6 px-2 rounded-md text-ui-xs text-foreground-subtle hover:bg-hover hover:text-foreground transition-colors"
             >
-              Tắt tất cả
+              {t("Tắt tất cả")}
             </button>
           </div>
         </div>
@@ -169,7 +171,7 @@ export default function SkillsPromptSection() {
           ))}
         </div>
         <p className="text-ui-xs text-foreground-subtlest mt-1.5">
-          write_file và run_command có thể thay đổi project hoặc chạy lệnh trên máy.
+          {t("write_file và run_command có thể thay đổi project hoặc chạy lệnh trên máy.")}
         </p>
       </div>
 
@@ -177,20 +179,20 @@ export default function SkillsPromptSection() {
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-1.5 text-ui-sm font-semibold text-foreground-subtle uppercase tracking-wider">
             <FileText className="size-3.5" />
-            Prompt ({promptsOn} / {PROMPT_SECTIONS.length})
+            {tf("Prompt ({on} / {total})", { on: promptsOn, total: PROMPT_SECTIONS.length })}
           </div>
           <div className="flex items-center gap-1">
             <button
               onClick={() => setAllPromptSectionsEnabled(true)}
               className="h-6 px-2 rounded-md text-ui-xs text-foreground-subtle hover:bg-hover hover:text-foreground transition-colors"
             >
-              Bật tất cả
+              {t("Bật tất cả")}
             </button>
             <button
               onClick={() => setAllPromptSectionsEnabled(false)}
               className="h-6 px-2 rounded-md text-ui-xs text-foreground-subtle hover:bg-hover hover:text-foreground transition-colors"
             >
-              Tắt tất cả
+              {t("Tắt tất cả")}
             </button>
           </div>
         </div>
@@ -206,8 +208,8 @@ export default function SkillsPromptSection() {
           ))}
         </div>
         <p className="text-ui-xs text-foreground-subtlest mt-1.5">
-          Tắt <span className="text-foreground-subtle">System prompt</span> sẽ khiến
-          agent không còn cú pháp tool — nó chỉ trả lời như chat thường.
+          {t("Tắt")} <span className="text-foreground-subtle">System prompt</span>{" "}
+          {t("sẽ khiến agent không còn cú pháp tool — nó chỉ trả lời như chat thường.")}
         </p>
       </div>
 
@@ -217,7 +219,7 @@ export default function SkillsPromptSection() {
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-1.5 text-ui-sm font-semibold text-foreground-subtle uppercase tracking-wider">
             <Upload className="size-3.5" />
-            Import từ .md ({importedOn} / {imported.length})
+            {tf("Import từ .md ({on} / {total})", { on: importedOn, total: imported.length })}
           </div>
           <button
             onClick={() => void handleImport()}
@@ -225,14 +227,15 @@ export default function SkillsPromptSection() {
             className="h-7 px-2.5 rounded-md text-ui-xs font-medium bg-primary text-primary-foreground hover:opacity-90 transition disabled:opacity-50 inline-flex items-center gap-1.5"
           >
             <Plus className="size-3.5" />
-            {importing ? "Đang đọc file…" : "Import .md"}
+            {importing ? t("Đang đọc file…") : "Import .md"}
           </button>
         </div>
 
         {imported.length === 0 ? (
           <p className="text-ui-xs text-foreground-subtlest rounded-xl border border-dashed border-border bg-surface px-3 py-2.5">
-            Chưa import file nào. Chọn một file <code className="text-foreground-subtle">.md</code>, mỗi block{" "}
-            <code className="text-foreground-subtle">## Ten</code> sẽ thành một phần của system prompt.
+            {t("Chưa import file nào. Chọn một file")} <code className="text-foreground-subtle">.md</code>
+            {t(", mỗi block")} <code className="text-foreground-subtle">## Ten</code>{" "}
+            {t("sẽ thành một phần của system prompt.")}
           </p>
         ) : (
           <div className="space-y-2">
@@ -245,7 +248,7 @@ export default function SkillsPromptSection() {
                   <button
                     onClick={() => removeImportedSkillFile(path)}
                     className="p-1 rounded-md text-foreground-subtlest hover:text-danger hover:bg-hover transition-colors shrink-0"
-                    title="Bỏ file này"
+                    title={t("Bỏ file này")}
                   >
                     <Trash2 className="size-3.5" />
                   </button>
@@ -257,7 +260,7 @@ export default function SkillsPromptSection() {
                       title={b.name}
                       desc={
                         b.truncated
-                          ? `${b.description} (đã cắt còn ${MAX_SKILL_BLOCK_CHARS} ký tự)`
+                          ? `${b.description}${tf(" (đã cắt còn {max} ký tự)", { max: MAX_SKILL_BLOCK_CHARS })}`
                           : b.description
                       }
                       value={!disabledImported.has(b.id)}
@@ -270,7 +273,7 @@ export default function SkillsPromptSection() {
           </div>
         )}
         <p className="text-ui-xs text-foreground-subtlest mt-1.5">
-          Import lại cùng một file sẽ thay thế các block cũ của file đó. Nội dung được lưu trong Settings.
+          {t("Import lại cùng một file sẽ thay thế các block cũ của file đó. Nội dung được lưu trong Settings.")}
         </p>
       </div>
     </div>

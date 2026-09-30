@@ -567,6 +567,15 @@ class DuckAiDriver {
       d.client = await CdpClient.connect();
     }
     if (!d.client) {
+      // Still nothing to attach to: the parked bridge webview never booted its
+      // renderer (or its page died). Re-navigate it and look one more time.
+      // Giving up here is what pushed a send onto the direct PoW transport,
+      // which duck.ai's anti-bot answers with 418 ERR_CHALLENGE.
+      await invoke("recreate_bridge").catch(() => null);
+      await new Promise((r) => setTimeout(r, 2500));
+      d.client = await CdpClient.connect();
+    }
+    if (!d.client) {
       d.failed = true;
       DuckAiDriver.instance = d;
       return d;

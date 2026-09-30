@@ -1,4 +1,5 @@
 import { useStore } from "../store";
+import { t, tf, useLang } from "../lib/i18n";
 import { CheckCheck, ShieldOff, X } from "lucide-react";
 
 /**
@@ -15,6 +16,7 @@ import { CheckCheck, ShieldOff, X } from "lucide-react";
 const NO_TOOLS: string[] = [];
 
 export default function PermissionRules() {
+  useLang();
   const allowed = useStore((s) => s.settings.alwaysAllowTools) ?? NO_TOOLS;
   const denied = useStore((s) => s.settings.alwaysDenyTools) ?? NO_TOOLS;
   const clearAlwaysRule = useStore((s) => s.clearAlwaysRule);
@@ -22,7 +24,7 @@ export default function PermissionRules() {
   if (allowed.length === 0 && denied.length === 0) {
     return (
       <p className="text-ui-xs text-foreground-subtlest px-2 py-1.5">
-        Chưa có luật nào. Chọn "Luôn cho phép" hoặc "Luôn chặn" trong hộp thoại cấp quyền.
+        {t("Chưa có luật nào. Chọn \"Luôn cho phép\" hoặc \"Luôn chặn\" trong hộp thoại cấp quyền.")}
       </p>
     );
   }
@@ -43,13 +45,13 @@ export default function PermissionRules() {
             {tool}
           </span>
           <span className="text-ui-xs text-foreground-subtlest">
-            {isDeny ? "luôn chặn" : "luôn cho phép"}
+            {isDeny ? t("luôn chặn") : t("luôn cho phép")}
           </span>
           <button
             type="button"
             onClick={() => clearAlwaysRule(tool)}
-            title={`Bỏ luật ${tool}`}
-            aria-label={`Bỏ luật ${tool}`}
+            title={tf("Bỏ luật {tool}", { tool })}
+            aria-label={tf("Bỏ luật {tool}", { tool })}
             className="opacity-0 group-hover:opacity-100 focus:opacity-100 p-0.5 rounded hover:bg-selected text-foreground-subtle hover:text-foreground transition-opacity"
           >
             <X className="size-3" />

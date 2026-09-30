@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { setLangSetting, t, tf } from "../lib/i18n";
 import type {
   Message,
   Conversation,
@@ -25,17 +26,30 @@ import {
   generateDurableStream,
 } from "../lib/duckai";
 import { getDriver } from "../lib/duckai-driver";
+import {
+  OFFICIAL_MARKETPLACE,
+  fetchMarketplace,
+  installPluginFiles,
+  loadInstalledPlugins,
+  renderPluginIndex,
+  uninstallPluginFiles,
+  type MarketplaceEntry,  type PluginCommand,
+  type PluginSkill,
+} from "../lib/plugins";
 import { streamApiChat, type ApiChatMessage } from "../lib/api-chat";
 import {
   AGENT_SYS_PROMPT,
   INIT_PROMPT,
   MAX_TOOL_REFUSAL_RETRY_TURNS,
   PLAN_MODE_RULES,
+  SPA_MESSAGE_LIMIT,
   buildAgentSysPrompt,
   buildToolProtocolReminder,
+  clampToolFeedback,
   composeAgentRequest,
   looksLikeToolRefusal,
   parseToolCalls,
+  spaContextBudget,
   stripToolBlocks,
   executeTool,
   resolveProjectPath,
@@ -58,6 +72,7 @@ import {
 import {
   loadCustomCommands,
   renderCommandTemplate,
+  fillCommandTemplate,
   type CustomCommand,
 } from "../lib/custom-commands";
 import {
@@ -66,7 +81,11 @@ import {
   renderImportedSkills,
 } from "../lib/imported-skills";
 import { parseUnifiedDiff } from "../lib/git-diff";
-import { setPendingCaptchaRetry } from "../lib/bridge-watcher";
+import {
+  clearParkedSendRetry,
+  setPendingSendRetry,
+  undockBridge
+} from "../lib/bridge-watcher";
 
 interface StreamMsg {
   event: "delta" | "title" | "done";
@@ -131,8 +150,20 @@ export function resetSpaThread(): void {
 
 /** Tracks the in-flight agent send so Stop can interrupt the loop. */
 let activeRun: { conversationId: string; aborted: boolean } | null = null;
-/** True while the bridge window was auto-docked for a captcha challenge. */
+/** True while the bridge window was auto-docked (captcha, or a send waiting
+ *  for the bridge to come back). */
 let bridgeAutoDocked = false;
+
+/**
+ * How patient a send is with the bridge webview before calling it down.
+ *
+ * A dead bridge is not a slow bridge: attaching costs one `cdp_targets` round
+ * trip plus a websocket open, and `getDriver` re-navigates the parked view when
+ * nothing answers — so a reload is routinely ready a few seconds later, which
+ * is exactly the window in which the direct PoW transport gets a 418.
+ */
+const BRIDGE_REPROBE_MS = 2000;
+const BRIDGE_REPROBE_TRIES = 5;
 
 // ---------------------------------------------------------------------------
 // Undo/redo of agent file edits (opencode-style /undo · /redo), in memory.
@@ -379,6 +410,80 @@ export interface ProjectSyncState {
 const IDLE_PROJECT_SYNC: ProjectSyncState = { status: "idle", path: null, error: null };
 
 /**
+ * Marketplace catalog state (Settings → Plugins).
+ *
+ * `error` keeps the raw backend message because the two common failures need
+ * different advice: a 403 is GitHub's unauthenticated rate limit (wait), a
+ * network message is offline (nothing to wait for).
+ */
+export interface MarketplaceState {
+  status: "idle" | "loading" | "ready" | "error";
+  entries: MarketplaceEntry[];
+  error: string | null;
+  fetchedAt: number | null;
+  /** Which repository the entries came from. */
+  source: string;
+}
+
+/** Plugin skill/command text read from `<app data>/plugins`. */
+export interface PluginContent {
+  skills: PluginSkill[];
+  commands: PluginCommand[];
+  /** True once the folder has been read, so the UI can say "0 plugins" honestly. */
+  loaded: boolean;
+}
+
+const IDLE_MARKETPLACE: MarketplaceState = {
+  status: "idle",
+  entries: [],
+  error: null,
+  fetchedAt: null,
+  source: OFFICIAL_MARKETPLACE.repo,
+};
+
+const EMPTY_PLUGIN_CONTENT: PluginContent = { skills: [], commands: [], loaded: false };
+
+const MARKETPLACE_CACHE_KEY = "duckchat.marketplaceCache";
+/** How long a cached catalog is trusted before the Plugins tab re-fetches it. */
+export const MARKETPLACE_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * The last catalog that loaded, so a first open without network still lists the
+ * plugins the user can install or manage. Stale rows cost a re-fetch, not a
+ * dead tab.
+ */
+function readMarketplaceCache(): MarketplaceState {
+  let parsed: { fetchedAt?: number; entries?: MarketplaceEntry[] } | null = null;
+  try {
+    const raw = localStorage.getItem(MARKETPLACE_CACHE_KEY);
+    parsed = raw ? JSON.parse(raw) : null;
+  } catch {
+    parsed = null;
+  }
+  const entries = Array.isArray(parsed?.entries)
+    ? parsed!.entries.filter(
+        (e) => e && typeof e.name === "string" && e.source && typeof e.source.kind === "string"
+      )
+    : [];
+  if (entries.length === 0) return IDLE_MARKETPLACE;
+  return {
+    status: "ready",
+    entries,
+    error: null,
+    fetchedAt: typeof parsed?.fetchedAt === "number" ? parsed.fetchedAt : null,
+    source: OFFICIAL_MARKETPLACE.repo,
+  };
+}
+
+function writeMarketplaceCache(entries: MarketplaceEntry[], fetchedAt: number) {
+  try {
+    localStorage.setItem(MARKETPLACE_CACHE_KEY, JSON.stringify({ fetchedAt, entries }));
+  } catch {
+    // Quota or a private-mode profile: the catalog simply re-fetches next time.
+  }
+}
+
+/**
  * The project the given state wants open, in priority order:
  *   1. the active conversation's own binding — the authoritative one
  *   2. the most recently opened workspace — so a fresh install with history but
@@ -406,6 +511,31 @@ export function resolveDesiredProjectPath(state: {
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * duck.ai answers a refused PoW request with an opaque body —
+ * `HTTP 418 I'm a teapot {"type":"ERR_CHALLENGE","overrideCode":"3501",...}`.
+ * Dumped into the chat that reads as an app crash, so name the failure and the
+ * way out; the raw payload stays in the terminal log.
+ */
+function duckChatErrorText(err: unknown): string {
+  const s = String(err);
+  const type = /"type"\s*:\s*"([A-Z_]+)"/.exec(s)?.[1];
+  const code = /HTTP (\d{3})/.exec(s)?.[1];
+  if (type === "ERR_CHALLENGE" || code === "418")
+    return t(
+      "⚠️ duck.ai từ chối phiên xác thực (418). Bản gửi trực tiếp (PoW) đã bị anti-bot chặn — mở cửa sổ bridge lvaigent, giải captcha nếu hiện ra, rồi gửi lại tin nhắn."
+    );
+  if (type === "ERR_BAD_REQUEST" || code === "400")
+    return t(
+      "⚠️ duck.ai báo yêu cầu không hợp lệ (400): model hoặc định dạng tin nhắn đã đổi phía server. Thử model khác, hoặc dùng bridge lvaigent."
+    );
+  if (type === "ERR_INPUT_LIMIT")
+    return t("⚠️ Nội dung gửi quá dài so với giới hạn của duck.ai — thu gọn ngữ cảnh rồi thử lại.");
+  if (type === "ERR_RATE_LIMIT" || code === "429")
+    return t("⚠️ lvaigent đang giới hạn tốc độ (429). Chờ 30–60 giây rồi thử lại.");
+  return s;
 }
 
 /**
@@ -510,6 +640,20 @@ interface AppState {
   setImportedSkillEnabled: (id: string, enabled: boolean) => void;
   /** Drop every block that came from one source file. */
   removeImportedSkillFile: (sourcePath: string) => void;
+
+  // --- Plugins (ZCode marketplace format) -------------------------------
+  /** Catalog entries from the marketplace, plus how the last fetch went. */
+  marketplace: MarketplaceState;
+  /** Skill/command text currently on disk for the installed plugins. */
+  pluginContent: PluginContent;
+  /** Which plugin an install/uninstall is working on, or null when idle. */
+  pluginBusy: string | null;
+  refreshMarketplace: () => Promise<boolean>;
+  installPlugin: (name: string) => Promise<boolean>;
+  uninstallPlugin: (name: string) => Promise<boolean>;
+  setPluginEnabled: (name: string, enabled: boolean) => void;
+  /** Re-read the plugins folder after an install, a toggle change or at boot. */
+  reloadPluginContent: () => Promise<void>;
 
   providers: Provider[];
   updateProvider: (id: string, updates: Partial<Provider>) => void;
@@ -631,7 +775,7 @@ interface AppState {
   vqdStatus: "unknown" | "solving" | "ready" | "error";
   vqdSolvedAt: number | null;
   setVqdStatus: (s: AppState["vqdStatus"], ts?: number | null) => void;
-  sendDuckChat: (conversationId: string, userContent: string, forceLegacy?: boolean, opts?: { systemPromptOverride?: string | null; mode?: AgentMode }) => Promise<void>;
+  sendDuckChat: (conversationId: string, userContent: string, forceLegacy?: boolean, opts?: { systemPromptOverride?: string | null; mode?: AgentMode; preferBridge?: boolean }) => Promise<void>;
   /** Abort the in-flight agent send (opencode-style stop). */
   stopAgent: () => void;
 
@@ -674,7 +818,7 @@ const defaultSettings: AppSettings = {
   reviewSource: "git",
   selectedModel: "gpt-5.4-mini",
   selectedProvider: "provider_duckai",
-  language: "en",
+  language: "vi",
   autoAcceptPermissions: false,
   terminalShell: "powershell",
   showReasoning: false,
@@ -709,6 +853,9 @@ function loadSavedSettings(): AppSettings {
 }
 
 const initialSettings: AppSettings = loadSavedSettings();
+
+// The app defaults to Vietnamese; only an explicit "en" setting switches it.
+setLangSetting(initialSettings.language);
 
 /** Restore user-added providers; the duck.ai default is always present. */
 function loadProviders(): Provider[] {
@@ -836,6 +983,12 @@ function formatOverview(project: Project, ov: ProjectOverview): string {
  * `namedFiles` are files the *user's own message* named, already read by the
  * caller. They go first and carry their content, because that is the code the
  * request is actually about — the map below is only orientation.
+ *
+ * `maxChars` budgets the whole block for duck.ai's composer
+ * (`SPA_MESSAGE_LIMIT`): sections are dropped from the end, i.e. in reverse
+ * priority (attachments, then AGENTS.md, then the codebase map, and the
+ * named files only as a last resort). Nothing is sliced here — a partial file
+ * dump is worse than a missing one.
  */
 export function buildContextBlock(
   project: Project | null,
@@ -844,7 +997,8 @@ export function buildContextBlock(
   agentsMd: string | null,
   /** Prompt sections the user turned on (Settings → Skills & Prompt). */
   sections: readonly PromptSectionId[] = ALL_PROMPT_SECTION_IDS,
-  namedFiles: readonly { path: string; content: string; truncated?: boolean }[] = []
+  namedFiles: readonly { path: string; content: string; truncated?: boolean }[] = [],
+  maxChars?: number
 ): string | null {
   const parts: string[] = [];
   const on = (id: PromptSectionId) => sections.includes(id);
@@ -896,12 +1050,17 @@ export function buildContextBlock(
     }
   }
   if (parts.length === 0) return null;
-  return (
+  const preamble =
     "You are lvaigent, an expert AI coding assistant. " +
     "Use the project context below when answering. " +
-    "When showing code, use markdown code blocks with language tags.\n\n" +
-    parts.join("\n\n")
-  );
+    "When showing code, use markdown code blocks with language tags.\n\n";
+  if (maxChars !== undefined) {
+    while (parts.length > 0 && preamble.length + parts.join("\n\n").length > maxChars) {
+      parts.pop();
+    }
+  }
+  if (parts.length === 0) return null;
+  return `${preamble}${parts.join("\n\n")}`;
 }
 
 /**
@@ -1244,7 +1403,12 @@ export const useStore = create<AppState>((set, get) => ({
                   ...m,
                   steps:
                     idx >= 0
-                      ? steps.map((s) => (s.id === step.id ? step : s))
+                      ? steps.map((s) =>
+                          // Keep the first-seen start time: the completion push
+                          // re-stamps `startedAt` to now, which would otherwise
+                          // erase the duration the step row displays.
+                          s.id === step.id ? { ...step, startedAt: s.startedAt } : s
+                        )
                       : [...steps, step],
                 };
               }),
@@ -1417,6 +1581,138 @@ export const useStore = create<AppState>((set, get) => ({
     });
   },
 
+  // --- Plugins -----------------------------------------------------------
+  marketplace: readMarketplaceCache(),
+  pluginContent: EMPTY_PLUGIN_CONTENT,
+  pluginBusy: null,
+
+  refreshMarketplace: async () => {
+    if (get().marketplace.status === "loading") return false;
+    set((s) => ({ marketplace: { ...s.marketplace, status: "loading", error: null } }));
+    try {
+      const market = await fetchMarketplace();
+      const fetchedAt = Date.now();
+      writeMarketplaceCache(market.plugins, fetchedAt);
+      set({
+        marketplace: {
+          status: "ready",
+          entries: market.plugins,
+          error: null,
+          fetchedAt,
+          source: OFFICIAL_MARKETPLACE.repo,
+        },
+      });
+      return true;
+    } catch (e) {
+      // Keep whatever list we already had: an offline start should still show
+      // the plugins the user can manage, not an empty store.
+      set((s) => ({
+        marketplace: { ...s.marketplace, status: "error", error: errorMessage(e) },
+      }));
+      return false;
+    }
+  },
+
+  installPlugin: async (name) => {
+    const entry = get().marketplace.entries.find((p) => p.name === name);
+    if (!entry) {
+      get().addToast(t("Plugin không có trong catalog — làm mới danh sách rồi thử lại"), "error");
+      return false;
+    }
+    if (get().pluginBusy) return false;
+    set({ pluginBusy: name });
+    try {
+      const { plugin, skills, commands } = await installPluginFiles({
+        entry,
+        lang: get().settings.language,
+      });
+      const s = get().settings;
+      const kept = (s.installedPlugins ?? []).filter((p) => p.name !== plugin.name);
+      get().updateSettings({
+        installedPlugins: [...kept, plugin].sort((a, b) => a.name.localeCompare(b.name)),
+        // A re-install of a plugin the user had switched off stays switched off.
+        disabledPlugins: (s.disabledPlugins ?? []).filter((p) =>
+          [...kept.map((k) => k.name), plugin.name].includes(p)
+        ),
+      });
+      await get().reloadPluginContent();
+      get().addToast(
+        tf("Đã cài {name} · {skills} skill, {commands} lệnh", {
+          name: plugin.name,
+          skills: skills.length,
+          commands: commands.length,
+        }),
+        "success"
+      );
+      if (plugin.unsupported.length > 0) {
+        get().addToast(
+          tf("Plugin này còn có {kinds}, nhưng lvaigent không chạy chúng", {
+            kinds: plugin.unsupported.join(", "),
+          }),
+          "info"
+        );
+      }
+      return true;
+    } catch (e) {
+      get().addToast(tf("Cài plugin thất bại: {err}", { err: errorMessage(e) }), "error");
+      return false;
+    } finally {
+      set({ pluginBusy: null });
+    }
+  },
+
+  uninstallPlugin: async (name) => {
+    if (get().pluginBusy) return false;
+    set({ pluginBusy: name });
+    try {
+      await uninstallPluginFiles(name);
+      const s = get().settings;
+      get().updateSettings({
+        installedPlugins: (s.installedPlugins ?? []).filter((p) => p.name !== name),
+        disabledPlugins: (s.disabledPlugins ?? []).filter((p) => p !== name),
+      });
+      await get().reloadPluginContent();
+      get().addToast(tf("Đã gỡ {name}", { name }), "success");
+      return true;
+    } catch (e) {
+      get().addToast(tf("Gỡ plugin thất bại: {err}", { err: errorMessage(e) }), "error");
+      return false;
+    } finally {
+      set({ pluginBusy: null });
+    }
+  },
+
+  setPluginEnabled: (name, enabled) => {
+    const s = get().settings;
+    const off = new Set(s.disabledPlugins ?? []);
+    if (enabled) off.delete(name);
+    else off.add(name);
+    const known = (s.installedPlugins ?? []).map((p) => p.name);
+    // Same pruning rule as the skills lists: a name that no longer has a plugin
+    // on disk must not linger and block a future install of a different plugin.
+    get().updateSettings({ disabledPlugins: known.filter((p) => off.has(p)) });
+    void get().reloadPluginContent();
+  },
+
+  reloadPluginContent: async () => {
+    const s = get().settings;
+    const off = new Set(s.disabledPlugins ?? []);
+    const wanted = (s.installedPlugins ?? []).filter((p) => !off.has(p.name)).map((p) => p.name);
+    if (wanted.length === 0) {
+      set({ pluginContent: { skills: [], commands: [], loaded: true } });
+      return;
+    }
+    const { skills, commands } = await loadInstalledPlugins();
+    const set_ = new Set(wanted);
+    set({
+      pluginContent: {
+        skills: skills.filter((k) => set_.has(k.plugin)),
+        commands: commands.filter((c) => set_.has(c.plugin)),
+        loaded: true,
+      },
+    });
+  },
+
   terminalLines: [],
   appendTerminal: (kind, text) =>
     set((state) => ({
@@ -1565,7 +1861,7 @@ export const useStore = create<AppState>((set, get) => ({
       void loadCustomCommands(path).then((cmds) => {
         customCommands = cmds;
         if (cmds.length > 0) {
-          get().addToast(`${cmds.length} custom command(s) từ .duckchat/commands`, "info");
+          get().addToast(tf("{count} custom command(s) từ .duckchat/commands", { count: cmds.length }), "info");
         }
       });
       return true;
@@ -1574,7 +1870,7 @@ export const useStore = create<AppState>((set, get) => ({
       // Record it: the no-project banner shows this verbatim, so a folder that
       // moved or was deleted is diagnosable instead of looking like a UI glitch.
       set({ projectSync: { status: "error", path, error: message } });
-      if (!opts.silent) get().addToast(`Không mở được project: ${message}`, "error");
+      if (!opts.silent) get().addToast(tf("Không mở được project: {message}", { message }), "error");
       return false;
     }
   },
@@ -1698,17 +1994,17 @@ export const useStore = create<AppState>((set, get) => ({
           ],
         }));
       } catch (e) {
-        get().addToast(`Không đọc được ${name}: ${e}`, "error");
+        get().addToast(tf("Không đọc được {name}: {error}", { name, error: String(e) }), "error");
       }
     }
     if (images > 0) {
       get().addToast(
-        `Đã đính kèm ${images} ảnh — model chỉ nhận đường dẫn, không nhận nội dung ảnh`,
+        tf("Đã đính kèm {count} ảnh — model chỉ nhận đường dẫn, không nhận nội dung ảnh", { count: images }),
         "info"
       );
     }
     if (overflow > 0) {
-      get().addToast(`Chỉ đính kèm được tối đa ${MAX_ATTACHMENTS} mục`, "error");
+      get().addToast(tf("Chỉ đính kèm được tối đa {max} mục", { max: MAX_ATTACHMENTS }), "error");
     }
   },
 
@@ -1717,14 +2013,14 @@ export const useStore = create<AppState>((set, get) => ({
     if (!root) return;
     if (get().attachedFiles.some((f) => f.path === root)) return;
     if (get().attachedFiles.length >= MAX_ATTACHMENTS) {
-      get().addToast(`Chỉ đính kèm được tối đa ${MAX_ATTACHMENTS} mục`, "error");
+      get().addToast(tf("Chỉ đính kèm được tối đa {max} mục", { max: MAX_ATTACHMENTS }), "error");
       return;
     }
     let nodes: FileNode[];
     try {
       nodes = await invoke<FileNode[]>("read_project_tree", { path: root });
     } catch (e) {
-      get().addToast(`Không mở được thư mục ${baseNameOf(root)}: ${e}`, "error");
+      get().addToast(tf("Không mở được thư mục {name}: {error}", { name: baseNameOf(root), error: String(e) }), "error");
       return;
     }
     const listing: string[] = [];
@@ -1761,7 +2057,11 @@ export const useStore = create<AppState>((set, get) => ({
       ],
     }));
     get().addToast(
-      `Đã đính kèm thư mục ${baseNameOf(root)} · ${files.length} tệp (nạp nội dung ${bodies.length} tệp văn bản)`,
+      tf("Đã đính kèm thư mục {name} · {total} tệp (nạp nội dung {loaded} tệp văn bản)", {
+        name: baseNameOf(root),
+        total: files.length,
+        loaded: bodies.length,
+      }),
       "info"
     );
   },
@@ -1782,6 +2082,7 @@ export const useStore = create<AppState>((set, get) => ({
       } catch {
         /* ignore quota errors */
       }
+      if (updates.language !== undefined) setLangSetting(next.language);
       return { settings: next };
     }),
 
@@ -1886,13 +2187,13 @@ export const useStore = create<AppState>((set, get) => ({
   undoLastEdit: async (conversationId) => {
     const stack = undoStacks.get(conversationId);
     if (!stack || stack.length === 0) {
-      get().addToast("Không có thay đổi nào để hoàn tác", "info");
+      get().addToast(t("Không có thay đổi nào để hoàn tác"), "info");
       return;
     }
     const tx = stack[stack.length - 1];
     const root = tx.projectRoot;
     if (!root) {
-      get().addToast("Không tìm thấy project — không thể hoàn tác", "error");
+      get().addToast(t("Không tìm thấy project — không thể hoàn tác"), "error");
       return;
     }
     try {
@@ -1915,24 +2216,24 @@ export const useStore = create<AppState>((set, get) => ({
         set({ reviewUpdatedAt: Date.now() });
       }
       get().addToast(
-        `Đã hoàn tác ${tx.before.length + tx.created.length} file`,
+        tf("Đã hoàn tác {count} file", { count: tx.before.length + tx.created.length }),
         "success"
       );
       void get().refreshOverview();
     } catch (e) {
-      get().addToast(`Undo thất bại: ${e}`, "error");
+      get().addToast(tf("Undo thất bại: {error}", { error: String(e) }), "error");
     }
   },
   redoLastEdit: async (conversationId) => {
     const rstack = redoStacks.get(conversationId);
     if (!rstack || rstack.length === 0) {
-      get().addToast("Không có thay đổi nào để làm lại", "info");
+      get().addToast(t("Không có thay đổi nào để làm lại"), "info");
       return;
     }
     const tx = rstack[rstack.length - 1];
     const root = tx.projectRoot;
     if (!root) {
-      get().addToast("Không tìm thấy project — không thể làm lại", "error");
+      get().addToast(t("Không tìm thấy project — không thể làm lại"), "error");
       return;
     }
     try {
@@ -1955,12 +2256,12 @@ export const useStore = create<AppState>((set, get) => ({
       lastEditTx.set(conversationId, tx);
       set({ reviewUpdatedAt: Date.now() });
       get().addToast(
-        `Đã làm lại ${tx.before.length + tx.created.length} file`,
+        tf("Đã làm lại {count} file", { count: tx.before.length + tx.created.length }),
         "success"
       );
       void get().refreshOverview();
     } catch (e) {
-      get().addToast(`Redo thất bại: ${e}`, "error");
+      get().addToast(tf("Redo thất bại: {error}", { error: String(e) }), "error");
     }
   },
 
@@ -1968,7 +2269,12 @@ export const useStore = create<AppState>((set, get) => ({
     conversationId: string,
     userContent: string,
     forceLegacy = false,
-    opts: { systemPromptOverride?: string | null; mode?: AgentMode } = {}
+    opts: {
+      systemPromptOverride?: string | null;
+      mode?: AgentMode;
+      /** This send exists because the direct PoW transport failed. */
+      preferBridge?: boolean;
+    } = {}
   ): Promise<void> => {
     const state = get();
     const conversation = state.conversations.find((c) => c.id === conversationId);
@@ -1999,24 +2305,34 @@ export const useStore = create<AppState>((set, get) => ({
       get().settings.importedSkills,
       get().settings.disabledImportedSkills
     );
+    // Installed plugins contribute an index of their skills, not their text:
+    // the agent reads a SKILL.md from disk when the task needs it.
+    const pluginBlock = renderPluginIndex(get().pluginContent.skills);
     // Reassigned below once the user's message has been read, so the intent
     // brief travels with the system prompt. `buildPayload` closes over it, so it
     // must be `let` rather than a constant.
-    let sysPrompt = [baseSys ? baseSys + planRules : "", importedBlock]
+    let sysPrompt = [baseSys ? baseSys + planRules : "", importedBlock, pluginBlock]
       .filter(Boolean)
       .join("\n\n");
     // What decides whether a duck.ai thread can be reused. Imported blocks are
     // part of the prompt, so editing one must open a fresh thread instead of
     // continuing one that carries the old instructions.
-    const promptBasis = baseSys === null && !importedBlock ? null : (baseSys ?? "") + importedBlock;
+    const promptBasis =
+      baseSys === null && !importedBlock && !pluginBlock
+        ? null
+        : (baseSys ?? "") + importedBlock + pluginBlock;
 
     const fileRefs = state.attachedFiles.map((f) => ({
       name: f.name,
       path: f.path,
       kind: f.kind,
     }));
-    const isLegacyRetry = forceLegacy;
-    if (!isLegacyRetry) {
+    // A retry of the *same* user turn: `forceLegacy` re-runs it on the PoW
+    // transport, `preferBridge` re-runs it on the bridge after duck.ai refused
+    // the PoW send. Both re-enter with the original `userContent`, so neither
+    // may add a second copy of that turn or a second empty assistant bubble.
+    const isInternalRetry = forceLegacy || opts.preferBridge === true;
+    if (!isInternalRetry) {
       const userMsg: Message = {
         id: generateId(),
         role: "user",
@@ -2033,8 +2349,8 @@ export const useStore = create<AppState>((set, get) => ({
       }
     }
 
-    // On a legacy retry, reuse the streaming placeholder added by the first attempt.
-    const pendingAssistant = isLegacyRetry
+    // On a retry, reuse the streaming placeholder added by the first attempt.
+    const pendingAssistant = isInternalRetry
       ? (() => {
           const msgs = get()
             .conversations.find((c) => c.id === conversationId)
@@ -2043,7 +2359,7 @@ export const useStore = create<AppState>((set, get) => ({
         })()
       : null;
     const assistantId = pendingAssistant ? pendingAssistant.id : generateId();
-    if (!isLegacyRetry) {
+    if (!isInternalRetry) {
       state.addMessage(conversationId, {
         id: assistantId,
         role: "assistant",
@@ -2168,17 +2484,42 @@ export const useStore = create<AppState>((set, get) => ({
         timer = null;
       }
       get().updateMessage(conversationId, assistantId, stripToolBlocks(acc));
+      if (acc.trim()) clearParkedSendRetry(conversationId);
       return acc;
     };
 
     let useDriver = false;
+    let useApi = false;
     let filesTouched = false;
     let driver: Awaited<ReturnType<typeof getDriver>> = null;
     let full = "";
 
+    /**
+     * Park this send for the bridge watcher and say so in the chat.
+     *
+     * Two end states need it: the bridge could not be reached at all, and a
+     * bridge-only retry (`preferBridge`) whose send failed again. Both mean the
+     * same thing — the direct PoW transport already refused this turn, so
+     * running it once more only burns another 418 — and the user is never asked
+     * to retype: the message goes out on its own once duck.ai answers.
+     */
+    const parkForBridge = async (): Promise<void> => {
+      stopTicker();
+      state.setVqdStatus("error");
+      bridgeAutoDocked = true;
+      setPendingSendRetry(conversationId, userContent);
+      await invoke("show_bridge_window", { show: true }).catch(() => {});
+      state.updateMessage(
+        conversationId,
+        assistantId,
+        t("⚠️ Bridge lvaigent chưa sẵn sàng, mà duck.ai thì từ chối gửi trực tiếp (418). Đã mở cửa sổ bridge — giải captcha nếu nó hiện ra; tin nhắn được giữ lại và sẽ tự gửi lại khi bridge trả lời.")
+      );
+      state.setStreaming(conversationId, assistantId, false);
+    };
+
     try {
       const provider = get().activeProvider();
-      const useApi = provider.id !== "provider_duckai";
+      useApi = provider.id !== "provider_duckai";
 
       // Read the user's message before reading the codebase: which files and
       // symbols they named decides what is worth pre-loading, and what kind of
@@ -2197,19 +2538,54 @@ export const useStore = create<AppState>((set, get) => ({
       const stepBudget = stepBudgetFor(signals.intent);
 
       // Computed once; every payload builder reads this via closure.
-      contextBlock = buildContextBlock(
-        get().currentProject,
-        get().attachedFiles,
-        get().projectOverview,
-        agentsMd(),
-        enabledPromptSectionIds(get().settings),
-        namedFiles
-      );
+      const buildBlock = (maxChars?: number): string | null =>
+        buildContextBlock(
+          get().currentProject,
+          get().attachedFiles,
+          get().projectOverview,
+          agentsMd(),
+          enabledPromptSectionIds(get().settings),
+          namedFiles,
+          maxChars
+        );
+      contextBlock = buildBlock();
+
+      // The bridge types its turn into a 16,000-character field, so the SPA
+      // carrier gets its own narrowed block instead of the full one: over the
+      // limit duck.ai rejects the message with no usable error, the bridge
+      // reports a generic failure, and the fallbacks land on the PoW path that
+      // already refused this session — which is how a long message ended up as
+      // the "bridge chưa sẵn sàng (418)" notice. The API and PoW payloads carry
+      // one message per turn, so they keep the full block.
+      const spaBlockChars = spaContextBudget(sysPrompt, userContent);
+      if (!useApi && spaBlockChars < 0) {
+        stopTicker();
+        state.updateMessage(
+          conversationId,
+          assistantId,
+          tf(
+            "❌ Tin nhắn này quá dài để gửi sang lvaigent: giới hạn là {limit} ký tự mỗi lượt, mà chỉ dẫn agent cùng tin nhắn của bạn đã chiếm {used}. lvaigent chưa gửi gì cả — hãy rút gọn yêu cầu hoặc bớt file đính kèm.",
+            {
+              limit: SPA_MESSAGE_LIMIT.toLocaleString("vi-VN"),
+              used: (SPA_MESSAGE_LIMIT - spaBlockChars).toLocaleString("vi-VN"),
+            }
+          )
+        );
+        state.setStreaming(conversationId, assistantId, false);
+        return;
+      }
       const composeFirstSpaTurn = (): string => {
         // duck.ai has no system role, so the prompt is folded into the user text.
+        const spaBlock = buildBlock(spaBlockChars);
+        if (spaBlock !== contextBlock && spaBlock !== null) {
+          get().appendTerminal(
+            "info",
+            `ngắn hơn giới hạn 16.000 ký tự của lvaigent — bỏ bớt ngữ cảnh project`
+          );
+        }
         return composeAgentRequest({
           systemPrompt: sysPrompt,
-          contextBlock,
+          contextBlock: spaBlock,
           userContent,
           transport: "folded",
         }).userText;
@@ -2260,7 +2636,11 @@ export const useStore = create<AppState>((set, get) => ({
             // the session cookie persists afterwards. The captcha watcher
             // retries this send automatically once the challenge is gone.
             bridgeAutoDocked = true;
-            setPendingCaptchaRetry(conversationId, text);
+            // Park what the user actually wrote, not `text`: on the first turn
+            // `text` is the composed SPA message (system prompt and codebase
+            // map folded into it). Re-sending that as the user's message would
+            // print the whole prompt in a chat bubble and fold it again.
+            setPendingSendRetry(conversationId, userContent);
             await invoke("show_bridge_window", { show: true }).catch(() => {});
             throw new Error(
               "lvaigent yêu cầu xác minh bạn là người (image challenge). Trình duyệt đã mở để bạn " +
@@ -2297,13 +2677,17 @@ export const useStore = create<AppState>((set, get) => ({
           }
           throw new Error(`lvaigent error: ${res.errors.join("; ")}`);
         }
+        // The turn is out, so no resend is owed for this conversation. This
+        // comes FIRST: the window chore below is cosmetic, and parking a send
+        // duck.ai already answered is how the user got the same message typed
+        // into duck.ai twice.
+        clearParkedSendRetry(conversationId);
         // A clean reply usually means the user already solved the challenge:
         // tuck the auto-docked bridge window away again. A window the user
         // docked manually (TitleBar split) stays put.
         if (fresh && bridgeAutoDocked) {
           bridgeAutoDocked = false;
-          await invoke("show_bridge_window", { show: false }).catch(() => {});
-          window.dispatchEvent(new Event("duckai:relayout"));
+          await undockBridge().catch(() => {});
         }
         return res.text;
       };
@@ -2332,8 +2716,26 @@ export const useStore = create<AppState>((set, get) => ({
         startTicker(forceLegacy ? "giải PoW (legacy)" : "kết nối bridge lvaigent");
         driver = forceLegacy ? null : await getDriver(get().settings.duckaiCookies || "");
         useDriver = !!driver && driver.healthy;
+        // Never drop to the direct PoW transport because the bridge was a beat
+        // late: it is the one duck.ai's anti-bot refuses (418 ERR_CHALLENGE).
+        // getDriver re-attaches and, failing that, re-navigates the parked
+        // webview — a reload takes several seconds, so keep looking rather than
+        // giving up on the first miss. When the bridge is the only transport
+        // left (PoW already refused this send) the wait is the whole game.
+        if (!useDriver && !forceLegacy) {
+          const probes = opts.preferBridge ? BRIDGE_REPROBE_TRIES : 1;
+          for (let probe = 0; probe < probes && !useDriver; probe++) {
+            startTicker("kết nối bridge lvaigent");
+            await new Promise((r) => setTimeout(r, BRIDGE_REPROBE_MS));
+            driver = await getDriver(get().settings.duckaiCookies || "");
+            useDriver = !!driver && driver.healthy;
+          }
+        }
+        if (opts.preferBridge && !useDriver) {
+          await parkForBridge();
+          return;
+        }
       }
-
       for (let step = 0; ; step++) {
         if (run.aborted) break;
         if (useApi) {
@@ -2557,12 +2959,11 @@ export const useStore = create<AppState>((set, get) => ({
             }
           }
         }
-        let feedbackParts: string[] = [];
+        const feedbackParts: string[] = [];
         for (const o of outcomes) {
           agentLog.push({ role: "tool", content: o.message });
           feedbackParts.push(`[tool_result] ${o.message}`);
-        }
-        // Every round-trip back to the model repeats the tool protocol.
+        }        // Every round-trip back to the model repeats the tool protocol.
         //
         // This is the actual fix for "AI Agent không gọi lệnh được". duck.ai has
         // no system role, so the protocol reaches the model folded into the FIRST
@@ -2578,12 +2979,20 @@ export const useStore = create<AppState>((set, get) => ({
         // payload from different places: the driver types `toolFeedback` into the
         // SPA, while the PoW/API path replays `agentLog`. Patching only one left
         // the other still sending bare tool results.
+        //
+        // Only the driver carrier is clamped, because only it is one composer
+        // field: `agentLog` ships one message per turn and never hits duck.ai's
+        // 16,000-character limit.
         const protocol = skillsOn.length > 0 ? buildToolProtocolReminder(skillsOn) : "";
-        if (protocol) {
-          agentLog.push({ role: "user", content: protocol });
-          feedbackParts.push(protocol);
+        if (protocol) agentLog.push({ role: "user", content: protocol });
+        const clamped = clampToolFeedback(feedbackParts, protocol);
+        toolFeedback = clamped.text;
+        if (clamped.dropped > 0) {
+          get().appendTerminal(
+            "info",
+            `kết quả tool vượt giới hạn 16.000 ký tự của lvaigent — bỏ ${clamped.dropped} vòng cũ nhất`
+          );
         }
-        toolFeedback = feedbackParts.join("\n\n");
         // Latest partial text (tool blocks stripped) stays visible between rounds.
         stopTicker();
         get().updateMessage(conversationId, assistantId, stripToolBlocks(full));
@@ -2608,38 +3017,71 @@ export const useStore = create<AppState>((set, get) => ({
         state.updateMessage(
           conversationId,
           assistantId,
-          "⚠️ lvaigent đang giới hạn tốc độ (429). Chờ 30–60 giây rồi thử lại."
+          t("⚠️ lvaigent đang giới hạn tốc độ (429). Chờ 30–60 giây rồi thử lại.")
         );
         state.setStreaming(conversationId, assistantId, false);
         return;
       }
 
+      // duck.ai asked for a human being, not for a better hash: no transport
+      // passes an image challenge programmatically. And a send that is already
+      // bridge-only has no transport left to fall through to — without this the
+      // bridge→PoW→bridge cascade could repeat itself indefinitely.
+      const captchaBlocked = /image challenge/i.test(errStr);
+      if (opts.preferBridge && !captchaBlocked) {
+        await parkForBridge();
+        return;
+      }
+
       // If the bridge attached but misbehaved, retry ONCE through the legacy
       // PoW transport instead of failing the whole exchange. A legacy retry
-      // never falls back again, so a broken bridge can't cause infinite
-      // recursion of failed sends.
-      if (useDriver && !forceLegacy) {
+      // never falls back again, and a bridge-only run already returned above, so
+      // a broken bridge cannot make failed sends chase each other.
+      if (useDriver && !forceLegacy && !captchaBlocked) {
         get().appendTerminal("info", "bridge lỗi — thử qua PoW (legacy) 1 lần");
         await new Promise((r) => setTimeout(r, 3000));
         await state.sendDuckChat(conversationId, userContent, true, opts);
         return;
       }
 
-      if (errStr.includes("418") || errStr.includes("CHALLENGE")) {
+      // Anything in this family means duck.ai's anti-bot, not the model: a
+      // refused send (418 / ERR_CHALLENGE), a rejected request shape, a status
+      // call that never handed out a challenge to solve ("No x-vqd-hash-1
+      // header…"), or a challenge that would not run. The x-vqd case used to
+      // fall through to the plain error branch and print Rust's transport text
+      // as if it were the assistant's answer. `captchaBlocked` is excluded on
+      // purpose: that turn waits for the human, not for a re-solve.
+      if (!captchaBlocked && /418|CHALLENGE|ERR_BAD_REQUEST|x-vqd/i.test(errStr)) {
         // Hash rejected/expired -> re-solve once and retry.
         try {
           invalidateVqdHash();
           state.setVqdStatus("solving");
-          const hash = await ensureVqdHash(true);
+          const hash = await ensureVqdHash();
           state.setVqdStatus("ready", Date.now());
           await streamOnce(hash, buildPayload([]));
         } catch (retryErr) {
           state.setVqdStatus("error");
-          state.updateMessage(conversationId, assistantId, `Error: ${retryErr}`);
+          if (!opts.preferBridge && !useApi) {
+            // A second refusal of a freshly solved hash means the transport is
+            // the problem, not the answer: put this send back on the bridge
+            // instead of printing duck.ai's JSON into the chat.
+            get().appendTerminal("err", `PoW legacy: ${String(retryErr).slice(0, 240)}`);
+            get().appendTerminal("info", "PoW bị từ chối — quay lại bridge lvaigent");
+            await state.sendDuckChat(conversationId, userContent, false, {
+              ...opts,
+              preferBridge: true,
+            });
+            return;
+          }
+          state.updateMessage(
+            conversationId,
+            assistantId,
+            duckChatErrorText(retryErr)
+          );
         }
       } else {
         state.setVqdStatus("error");
-        state.updateMessage(conversationId, assistantId, `Error: ${e}`);
+        state.updateMessage(conversationId, assistantId, duckChatErrorText(e));
       }
     }
 
@@ -2753,10 +3195,10 @@ export function getSlashCommands(): SlashCommand[] {
   const builtins: SlashCommand[] = [
     {
       name: "/init",
-      description: "Phân tích codebase và tạo AGENTS.md ở thư mục gốc project",
+      description: t("Phân tích codebase và tạo AGENTS.md ở thư mục gốc project"),
       run: () => {
         if (!store.currentProject) {
-          store.addToast("Mở một project trước khi chạy /init", "error");
+          store.addToast(t("Mở một project trước khi chạy /init"), "error");
           return true;
         }
         const convId = store.activeConversationId ?? store.createConversation();
@@ -2768,7 +3210,7 @@ export function getSlashCommands(): SlashCommand[] {
     },
     {
       name: "/undo",
-      description: "Hoàn tác thay đổi file của lượt agent gần nhất",
+      description: t("Hoàn tác thay đổi file của lượt agent gần nhất"),
       run: () => {
         const id = store.activeConversationId;
         if (id) void store.undoLastEdit(id);
@@ -2777,7 +3219,7 @@ export function getSlashCommands(): SlashCommand[] {
     },
     {
       name: "/redo",
-      description: "Làm lại thay đổi vừa hoàn tác",
+      description: t("Làm lại thay đổi vừa hoàn tác"),
       run: () => {
         const id = store.activeConversationId;
         if (id) void store.redoLastEdit(id);
@@ -2786,7 +3228,7 @@ export function getSlashCommands(): SlashCommand[] {
     },
     {
       name: "/stop",
-      description: "Dừng phản hồi đang chạy",
+      description: t("Dừng phản hồi đang chạy"),
       run: () => {
         store.stopAgent();
         return true;
@@ -2794,7 +3236,7 @@ export function getSlashCommands(): SlashCommand[] {
     },
     {
       name: "/clear",
-      description: "Bắt đầu chat mới",
+      description: t("Bắt đầu chat mới"),
       run: () => {
         store.createConversation();
         return true;
@@ -2802,11 +3244,11 @@ export function getSlashCommands(): SlashCommand[] {
     },
     {
       name: "/review",
-      description: "Xem diff các file agent đã sửa ở lượt gần nhất",
+      description: t("Xem diff các file agent đã sửa ở lượt gần nhất"),
       run: () => {
         const id = store.activeConversationId;
         if (!id || !store.reviewAvailable(id)) {
-          store.addToast("Chưa có thay đổi nào để xem", "info");
+          store.addToast(t("Chưa có thay đổi nào để xem"), "info");
           return true;
         }
         store.setShowReview(true);
@@ -2825,7 +3267,20 @@ export function getSlashCommands(): SlashCommand[] {
       return true;
     },
   }));
-  return [...builtins, ...custom];
+  // Plugin commands use ZCode's `<plugin>:<command>` naming, so a plugin's own
+  // documentation names the command the user types. They ride the same send path
+  // as custom commands — with the plugin skill index already in the prompt.
+  const fromPlugins: SlashCommand[] = store.pluginContent.commands.map((cmd) => ({
+    name: `/${cmd.name}`,
+    description: cmd.description,
+    custom: true,
+    run: (args: string) => {
+      const convId = store.activeConversationId ?? store.createConversation();
+      void store.sendDuckChat(convId, fillCommandTemplate(cmd.template, args));
+      return true;
+    },
+  }));
+  return [...builtins, ...custom, ...fromPlugins];
 }
 
 // Debug/testing hook: drive the store from DevTools or CDP

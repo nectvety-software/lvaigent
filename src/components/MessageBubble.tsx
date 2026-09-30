@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import type { Message, AgentStep } from "../types";
 import { parseUnifiedDiff, hunksToRows } from "../lib/git-diff";
+import { t, tf, useLang } from "../lib/i18n";
 import DiffRows from "./DiffRows";
 import HoverPreview from "./HoverPreview";
 import Markdown from "./Markdown";
@@ -45,6 +46,7 @@ function stepIcon(step: AgentStep) {
 
 /** Clickable +N/−N badge that expands the file's Git diff inline. */
 function InlineDiffBadge({ step }: { step: AgentStep }) {
+  useLang();
   const [open, setOpen] = useState(false);
   const [rows, setRows] = useState<ReturnType<typeof hunksToRows> | null>(null);
   const [loading, setLoading] = useState(false);
@@ -93,7 +95,7 @@ function InlineDiffBadge({ step }: { step: AgentStep }) {
         <button
           onClick={toggle}
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-md font-mono text-ui-xs bg-surface-hover hover:bg-card-selected transition-colors"
-          title={open ? "Thu gọn diff" : "Xem diff ngay tại đây"}
+          title={open ? t("Thu gọn diff") : t("Xem diff ngay tại đây")}
         >
           <span className="text-success">+{step.write!.added}</span>
           <span className="text-destructive">−{step.write!.removed}</span>
@@ -105,7 +107,7 @@ function InlineDiffBadge({ step }: { step: AgentStep }) {
             setShowReview(true);
           }}
           className="p-0.5 rounded-md text-foreground-subtlest hover:text-brand transition-colors"
-          title="Mở review panel"
+          title={t("Mở review panel")}
         >
           <ChevronRight size={10} />
         </button>
@@ -114,10 +116,10 @@ function InlineDiffBadge({ step }: { step: AgentStep }) {
         <div className="mt-1 rounded-lg border border-border overflow-hidden">
           {loading ? (
             <div className="px-3 py-2.5 text-ui-xs text-foreground-subtlest flex items-center gap-2 bg-terminal-bg">
-              <Loader2 size={11} className="animate-spin" /> Đang đọc diff…
+              <Loader2 size={11} className="animate-spin" /> {t("Đang đọc diff…")}
             </div>
           ) : error ? (
-            <div className="px-3 py-2.5 text-ui-xs text-warning/90 bg-terminal-bg">{error}</div>
+            <div className="px-3 py-2.5 text-ui-xs text-warning/90 bg-terminal-bg">{t(error)}</div>
           ) : (
             <DiffRows rows={rows ?? []} />
           )}
@@ -157,11 +159,21 @@ function ToolStepRow({ step }: { step: AgentStep }) {
           <Check size={12} className="shrink-0 text-foreground-subtlest" />
         )}
         <span className="text-foreground-subtlest font-mono shrink-0">{step.tool}</span>
-        <span className="text-foreground-subtlest truncate flex-1">{label}</span>
+        <span className="text-foreground-subtlest truncate flex-1 min-w-0">{label}</span>
         {step.write && <InlineDiffBadge step={step} />}
         {!step.write && (
-          <span className="text-foreground-subtlest text-ui-xs shrink-0 tabular-nums">{step.summary}</span>
+          <span
+            title={step.summary}
+            className="text-foreground-subtlest text-ui-xs tabular-nums shrink min-w-0 max-w-[45%] truncate"
+          >
+            {step.summary}
+          </span>
         )}
+        {step.endedAt ? (
+          <span className="text-foreground-subtlest text-ui-xs shrink-0 tabular-nums">
+            {Math.max(1, Math.round((step.endedAt - step.startedAt) / 1000))}s
+          </span>
+        ) : null}
         {step.detail && (
           <ChevronRight
             size={12}
@@ -178,7 +190,52 @@ function ToolStepRow({ step }: { step: AgentStep }) {
   );
 }
 
+/**
+ * ZCode-v3.14.3-style run status: a live counter header plus auto-collapse
+ * once a large run outgrows the message, so recent steps stay reachable
+ * without scrolling past dozens of finished rows.
+ */
+const TAIL_WHILE_STREAMING = 6;
+const TAIL_WHEN_DONE = 8;
+
+function StepList({ steps, streaming }: { steps: AgentStep[]; streaming: boolean }) {
+  useLang();
+  const [expanded, setExpanded] = useState(false);
+  const runningStep = steps.find((s) => s.status === "running");
+  const tail = streaming ? TAIL_WHILE_STREAMING : TAIL_WHEN_DONE;
+  const collapsible = steps.length > tail + 2;
+  const showAll = expanded || !collapsible;
+  const shown = showAll ? steps : steps.slice(steps.length - tail);
+  return (
+    <div className="flex flex-col gap-1 mb-2">
+      <div className="flex items-center gap-2 text-ui-xs text-foreground-subtlest">
+        <span className="tabular-nums">
+          {streaming
+            ? tf("LIVE · bước {done}/{total} · đang chạy {tool}", {
+                done: steps.length - (runningStep ? 1 : 0),
+                total: steps.length,
+                tool: runningStep?.tool ?? "…",
+              })
+            : tf("{total} bước đã hoàn tất", { total: steps.length })}
+        </span>
+        {collapsible && (
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            className="hover:text-foreground transition-colors underline-offset-2 hover:underline"
+          >
+            {showAll ? t("Thu gọn") : tf("Xem tất cả {n} bước", { n: steps.length })}
+          </button>
+        )}
+      </div>
+      {shown.map((s) => (
+        <ToolStepRow key={s.id} step={s} />
+      ))}
+    </div>
+  );
+}
+
 export default function MessageBubble({ message }: { message: Message }) {
+  useLang();
   const [copied, setCopied] = useState(false);
 
   const isUser = message.role === "user";
@@ -245,30 +302,26 @@ export default function MessageBubble({ message }: { message: Message }) {
           </div>
 
           {message.steps && message.steps.length > 0 && (
-            <div className="flex flex-col gap-1 mb-2">
-              {message.steps.map((s) => (
-                <ToolStepRow key={s.id} step={s} />
-              ))}
-            </div>
+            <StepList steps={message.steps} streaming={!!message.isStreaming} />
           )}
 
           {message.mode === "plan" && (
             <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[rgba(255,103,0,0.1)] border border-[rgba(255,103,0,0.25)] text-ui-xs font-medium text-brand mb-2 w-fit">
               <ShieldAlert size={9} />
-              PLAN — chỉ đề xuất, không sửa file
+              {t("PLAN — chỉ đề xuất, không sửa file")}
             </div>
           )}
 
           {message.stopped && (
             <div className="flex items-center gap-1.5 text-ui-xs text-warning/90 mb-1.5">
               <Square size={10} fill="currentColor" />
-              Đã dừng bởi người dùng
+              {t("Đã dừng bởi người dùng")}
             </div>
           )}
 
           {waiting ? (
             <div className="flex items-center gap-2.5 text-foreground-subtlest text-ui-base">
-              <span>{message.statusText ?? "Đang suy nghĩ"}</span>
+              <span>{t(message.statusText ?? "Đang suy nghĩ")}</span>
               <span className="flex items-center gap-1">
                 {[0, 1, 2].map((i) => (
                   <span
@@ -284,7 +337,7 @@ export default function MessageBubble({ message }: { message: Message }) {
               {message.isStreaming && message.statusText && (
                 <div className="flex items-center gap-2 text-ui-sm text-foreground-subtlest mb-1.5">
                   <Loader2 size={11} className="animate-spin" />
-                  {message.statusText}
+                  {t(message.statusText)}
                 </div>
               )}
               <div className={message.isStreaming ? "stream-caret" : ""}>
@@ -294,7 +347,7 @@ export default function MessageBubble({ message }: { message: Message }) {
           ) : message.statusText ? (
             <div className="flex items-center gap-2 text-ui-sm text-foreground-subtlest">
               <Loader2 size={11} className="animate-spin" />
-              {message.statusText}
+              {t(message.statusText)}
             </div>
           ) : null}
 

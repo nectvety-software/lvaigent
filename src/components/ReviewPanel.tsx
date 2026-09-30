@@ -22,6 +22,7 @@ import type { ReviewFile } from "../types";
 import { collapseContext, diffLines } from "../lib/diff";
 import { hunksToRows, type GitHunk } from "../lib/git-diff";
 import { mergeChangedFiles } from "../lib/changed-files";
+import { t as tr, tf as trf, useLang } from "../lib/i18n";
 import DiffRows, { type DiffRow } from "./DiffRows";
 
 const TURN_CHIP_STYLE = [
@@ -47,6 +48,7 @@ function MarkerRows({
   rowTurns: (number | undefined)[];
   enabled: boolean;
 }) {
+  useLang();
   if (!enabled) return <DiffRows rows={rows} />;
   return (
     <div className="border-t border-border bg-terminal-bg font-mono text-ui-xs leading-[1.5] max-h-[50vh] overflow-auto">
@@ -54,7 +56,7 @@ function MarkerRows({
         if (row.type === "gap") {
           return (
             <div key={i} className="px-3 py-0.5 text-foreground-subtlest bg-surface/60 select-none">
-              ⋯ {row.count} dòng không đổi
+              ⋯ {trf("{count} dòng không đổi", { count: row.count })}
             </div>
           );
         }
@@ -84,7 +86,7 @@ function MarkerRows({
             {turnIdx !== undefined && turnIdx >= 0 && (
               <span
                 className={`self-center mr-1.5 px-1 rounded border text-ui-xs font-bold shrink-0 ${turnChip(turnIdx)}`}
-                title={`Dòng này được thêm ở lượt ${turnIdx + 1}`}
+                title={trf("Dòng này được thêm ở lượt {turn}", { turn: turnIdx + 1 })}
               >
                 L{turnIdx + 1}
               </span>
@@ -123,6 +125,7 @@ function EditTimeline({
   selected: number | null;
   onSelect: (turn: number | null) => void;
 }) {
+  useLang();
   return (
     <div className="border-t border-border px-3 py-2 space-y-0">
       {edits.map((e, i) => {
@@ -131,7 +134,7 @@ function EditTimeline({
           <button
             key={i}
             onClick={() => onSelect(active ? null : i)}
-            title={active ? "Bấm để quay lại diff tổng hợp" : "Xem diff riêng của lượt này"}
+            title={active ? tr("Bấm để quay lại diff tổng hợp") : tr("Xem diff riêng của lượt này")}
             className={`w-full flex items-center gap-2 text-ui-xs relative pl-3 pr-1.5 py-0.5 rounded transition-colors ${
               active ? "bg-primary/15" : "hover:bg-surface-hover"
             }`}
@@ -148,15 +151,15 @@ function EditTimeline({
             />
             <span className="text-foreground-subtlest tabular-nums shrink-0">{formatEditTime(e.at)}</span>
             <span className={active ? "text-brand font-medium" : "text-foreground-subtlest"}>
-              lượt {i + 1}
+              {trf("lượt {turn}", { turn: i + 1 })}
             </span>
             {e.added > 0 && <span className="font-mono text-success">+{e.added}</span>}
             {e.removed > 0 && <span className="font-mono text-destructive">−{e.removed}</span>}
             {e.added === 0 && e.removed === 0 && (
-              <span className="text-foreground-subtlest">không đổi</span>
+              <span className="text-foreground-subtlest">{tr("không đổi")}</span>
             )}
             {active && (
-              <span className="ml-auto text-ui-xs text-brand">đang xem · bấm để thoát</span>
+              <span className="ml-auto text-ui-xs text-brand">{tr("đang xem · bấm để thoát")}</span>
             )}
           </button>
         );
@@ -178,6 +181,7 @@ function FileDiff({
   defaultOpen: boolean;
   showTimeline: boolean;
 }) {
+  useLang();
   const [open, setOpen] = useState(defaultOpen);
   /** null = aggregate diff; 0..n = show only that turn's diff. */
   const [turn, setTurn] = useState<number | null>(null);
@@ -220,9 +224,9 @@ function FileDiff({
 
   const headerLabel =
     turn !== null
-      ? `Lượt ${turn + 1} — riêng lượt này`
+      ? trf("Lượt {turn} — riêng lượt này", { turn: turn + 1 })
       : showTimeline
-        ? "Tổng hợp cả phiên"
+        ? tr("Tổng hợp cả phiên")
         : "";
 
   return (
@@ -244,14 +248,14 @@ function FileDiff({
         <span className="font-mono text-ui-sm text-foreground truncate flex-1">{file.path}</span>
         {turn !== null ? (
           <span className="text-ui-xs font-medium text-brand shrink-0 bg-primary/15 px-1.5 py-0.5 rounded">
-            Lượt {turn + 1}
+            {trf("Lượt {turn}", { turn: turn + 1 })}
           </span>
         ) : showTimeline && file.edits && file.edits.length > 1 ? (
           <span
             className="text-ui-xs text-foreground-subtlest shrink-0"
-            title="Số lượt agent đã sửa file này trong phiên"
+            title={tr("Số lượt agent đã sửa file này trong phiên")}
           >
-            {file.edits.length} lượt
+            {trf("{count} lượt", { count: file.edits.length })}
           </span>
         ) : null}
         {file.binary ? (
@@ -268,13 +272,13 @@ function FileDiff({
       )}
       {open && turn !== null && (
         <div className="border-t border-border px-3 py-1 text-ui-xs text-foreground-subtlest bg-surface/60">
-          {headerLabel} · chỉ hiển thị thay đổi của lượt được chọn
+          {headerLabel} · {tr("chỉ hiển thị thay đổi của lượt được chọn")}
         </div>
       )}
       {open &&
         (file.binary ? (
           <div className="border-t border-border px-3 py-3 text-ui-xs text-foreground-subtlest">
-            File nhị phân — không hiển thị diff.
+            {tr("File nhị phân — không hiển thị diff.")}
           </div>
         ) : (
           <MarkerRows rows={rows} rowTurns={rowTurns} enabled={showMarkers} />
@@ -298,6 +302,7 @@ const statusLetter = (f: StatusFile): string => {
 
 /** Git staging + commit block shown above the file list. */
 function GitActions({ root }: { root: string }) {
+  useLang();
   const addToast = useStore((s) => s.addToast);
   const [files, setFiles] = useState<StatusFile[]>([]);
   const [staged, setStaged] = useState<Set<string>>(new Set());
@@ -347,7 +352,7 @@ function GitActions({ root }: { root: string }) {
       if (toUnstage.length > 0) await invoke("git_unstage", { paths: toUnstage, root });
       await refresh();
     } catch (e) {
-      addToast(`Git staging lỗi: ${e}`, "error");
+      addToast(trf("Git staging lỗi: {error}", { error: String(e) }), "error");
     }
   };
 
@@ -357,7 +362,7 @@ function GitActions({ root }: { root: string }) {
       const msg = await invoke<string>("git_suggest_commit_message", { root });
       setMessage(msg);
     } catch (e) {
-      addToast(`Không gợi ý được: ${e}`, "error");
+      addToast(trf("Không gợi ý được: {error}", { error: String(e) }), "error");
     } finally {
       setSuggesting(false);
     }
@@ -369,11 +374,11 @@ function GitActions({ root }: { root: string }) {
     setCommitting(true);
     try {
       await invoke("git_commit", { message: msg, root });
-      addToast("Đã commit thay đổi staged", "success");
+      addToast(tr("Đã commit thay đổi staged"), "success");
       setMessage("");
       await refresh();
     } catch (e) {
-      addToast(`Commit thất bại: ${e}`, "error");
+      addToast(trf("Commit thất bại: {error}", { error: String(e) }), "error");
     } finally {
       setCommitting(false);
     }
@@ -385,7 +390,7 @@ function GitActions({ root }: { root: string }) {
   if (loading) {
     return (
       <div className="px-3 py-2.5 rounded-lg border border-border bg-surface text-ui-xs text-foreground-subtlest flex items-center gap-2">
-        <Loader2 size={12} className="animate-spin" /> Đang đọc git status…
+        <Loader2 size={12} className="animate-spin" /> {tr("Đang đọc git status…")}
       </div>
     );
   }
@@ -393,7 +398,7 @@ function GitActions({ root }: { root: string }) {
   if (files.length === 0) {
     return (
       <div className="px-3 py-2 rounded-lg border border-border bg-surface text-ui-xs text-foreground-subtlest">
-        Git: working tree sạch — không có gì để stage/commit.
+        {tr("Git: working tree sạch — không có gì để stage/commit.")}
       </div>
     );
   }
@@ -451,18 +456,18 @@ function GitActions({ root }: { root: string }) {
               onClick={() => void applyStaging(files.map((f) => f.path))}
               className="flex items-center gap-1 px-2 py-1 rounded-md text-ui-xs border border-border text-foreground-subtle hover:text-foreground hover:bg-surface-hover transition-colors"
             >
-              <Plus size={11} /> Stage tất cả
+              <Plus size={11} /> {tr("Stage tất cả")}
             </button>
             <button
               onClick={() => void applyStaging([])}
               className="flex items-center gap-1 px-2 py-1 rounded-md text-ui-xs border border-border text-foreground-subtle hover:text-foreground hover:bg-surface-hover transition-colors"
             >
-              <Minus size={11} /> Unstage tất cả
+              <Minus size={11} /> {tr("Unstage tất cả")}
             </button>
             <button
               onClick={() => void refresh()}
               className="p-1 rounded-md hover:bg-surface-hover text-foreground-subtlest hover:text-foreground transition-colors"
-              title="Đọc lại git status"
+              title={tr("Đọc lại git status")}
             >
               <RefreshCw size={11} />
             </button>
@@ -482,7 +487,7 @@ function GitActions({ root }: { root: string }) {
               onClick={() => void suggestMessage()}
               disabled={suggesting}
               className="p-1.5 rounded-md border border-border text-foreground-subtle hover:text-brand hover:bg-surface-hover transition-colors disabled:opacity-40"
-              title="Gợi ý message từ thay đổi"
+              title={tr("Gợi ý message từ thay đổi")}
             >
               {suggesting ? (
                 <Loader2 size={13} className="animate-spin" />
@@ -510,6 +515,7 @@ function GitActions({ root }: { root: string }) {
 }
 
 export default function ReviewPanel({ conversationId, focusPath, onClose }: ReviewPanelProps) {
+  useLang();
   const getReviewFiles = useStore((s) => s.getReviewFiles);
   const getConversationEditTxs = useStore((s) => s.getConversationEditTxs);
   const undoLastEdit = useStore((s) => s.undoLastEdit);
@@ -561,9 +567,9 @@ export default function ReviewPanel({ conversationId, focusPath, onClose }: Revi
         <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
           <div className="flex items-center gap-2">
             <FileEdit size={15} className="text-brand" />
-            <span className="text-ui-base font-semibold text-foreground">Thay đổi của agent</span>
+            <span className="text-ui-base font-semibold text-foreground">{tr("Thay đổi của agent")}</span>
             <span className="text-ui-xs text-foreground-subtlest">
-              {files.length} file ·{" "}
+              {trf("{count} file", { count: files.length })} ·{" "}
               <span className="text-success">+{totalAdded}</span>{" "}
               <span className="text-destructive">−{totalRemoved}</span>
             </span>
@@ -576,9 +582,9 @@ export default function ReviewPanel({ conversationId, focusPath, onClose }: Revi
                   ? "bg-surface-hover text-brand"
                   : "text-foreground-subtlest hover:text-foreground-subtle"
               }`}
-              title="Chỉ lượt gửi gần nhất của agent"
+              title={tr("Chỉ lượt gửi gần nhất của agent")}
             >
-              Lượt này
+              {tr("Lượt này")}
             </button>
             <button
               onClick={() => setScope("session")}
@@ -587,9 +593,9 @@ export default function ReviewPanel({ conversationId, focusPath, onClose }: Revi
                   ? "bg-surface-hover text-brand"
                   : "text-foreground-subtlest hover:text-foreground-subtle"
               }`}
-              title="Tác nhân đã thay đổi tệp — mọi file agent đã sửa trong phiên này"
+              title={tr("Tác nhân đã thay đổi tệp — mọi file agent đã sửa trong phiên này")}
             >
-              Cả phiên
+              {tr("Cả phiên")}
             </button>
           </div>
           <div className="flex items-center gap-1.5">
@@ -602,7 +608,7 @@ export default function ReviewPanel({ conversationId, focusPath, onClose }: Revi
                     ? "bg-surface-hover text-brand"
                     : "text-foreground-subtlest hover:text-foreground-subtle"
                 }`}
-                title="So với Git (trạng thái hiện tại của repo)"
+                title={tr("So với Git (trạng thái hiện tại của repo)")}
               >
                 <GitCompare size={11} />
                 Git
@@ -614,7 +620,7 @@ export default function ReviewPanel({ conversationId, focusPath, onClose }: Revi
                     ? "bg-surface-hover text-brand"
                     : "text-foreground-subtlest hover:text-foreground-subtle"
                 }`}
-                title="So với snapshot trong bộ nhớ (trước/sau lượt agent)"
+                title={tr("So với snapshot trong bộ nhớ (trước/sau lượt agent)")}
               >
                 <Camera size={11} />
                 Snapshot
@@ -623,7 +629,7 @@ export default function ReviewPanel({ conversationId, focusPath, onClose }: Revi
             <button
               onClick={() => void reloadProjectData()}
               className="p-1.5 rounded-lg hover:bg-surface-hover text-foreground-subtlest hover:text-foreground transition-colors"
-              title="Đọc lại Git diff và custom commands"
+              title={tr("Đọc lại Git diff và custom commands")}
             >
               <RefreshCw size={13} />
             </button>
@@ -631,7 +637,7 @@ export default function ReviewPanel({ conversationId, focusPath, onClose }: Revi
               onClick={() => conversationId && undoLastEdit(conversationId)}
               disabled={files.length === 0 || scope === "session"}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-ui-sm font-medium border border-border bg-surface text-foreground-subtle hover:text-foreground hover:bg-surface-hover transition-colors disabled:opacity-30 disabled:pointer-events-none"
-              title={scope === "session" ? "Undo chỉ dùng cho phạm vi \"Lượt này\"" : "Hoàn tác toàn bộ thay đổi này (/undo)"}
+              title={scope === "session" ? tr("Undo chỉ dùng cho phạm vi \"Lượt này\"") : tr("Hoàn tác toàn bộ thay đổi này (/undo)")}
             >
               <Undo2 size={13} />
               Undo
@@ -655,12 +661,12 @@ export default function ReviewPanel({ conversationId, focusPath, onClose }: Revi
         {/* File list */}
         <div className="flex-1 overflow-y-auto p-3 space-y-2 modal-scroll">
           {loading ? (
-            <div className="text-center text-ui-sm text-foreground-subtlest py-10">Đang đọc diff…</div>
+            <div className="text-center text-ui-sm text-foreground-subtlest py-10">{tr("Đang đọc diff…")}</div>
           ) : files.length === 0 ? (
             <div className="text-center text-ui-sm text-foreground-subtlest py-10">
               {scope === "session"
-                ? "Tác nhân chưa thay đổi tệp nào trong phiên này."
-                : "Chưa có thay đổi nào ở lượt gần nhất."}
+                ? tr("Tác nhân chưa thay đổi tệp nào trong phiên này.")
+                : tr("Chưa có thay đổi nào ở lượt gần nhất.")}
             </div>
           ) : (
             files

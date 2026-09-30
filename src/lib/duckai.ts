@@ -3,21 +3,21 @@
 // Protocol (reverse-engineered from the duck.ai SPA + duckai-bridge):
 //  1. GET /duckchat/v1/status (x-vqd-accept: 1) -> `x-vqd-hash-1` header
 //     containing a base64-encoded JavaScript challenge.
-//  2. Execute the challenge in a sandboxed DOM-stubbed environment (see
-//     challenge.ts) matching the exact algorithm the reference client
-//     (p2d-duck) uses — NOT against WebView's real DOM.
+//  2. Execute the challenge (see challenge.ts) and read {server_hashes,
+//     client_hashes, signals, meta}.
 //  3. Override client_hashes[0] with the wire UA, then b64(sha256) each entry.
-//  4. Envelope {server_hashes, client_hashes, signals, meta} -> JSON ->
-//     base64. That IS the X-Vqd-Hash-1 value for chat requests.
-// The hash stays valid for several hours; cached in memory + localStorage.
+//  4. envelope JSON -> base64 -> X-Vqd-Hash-1.
+//
+// The result belongs to the challenge that handed it out: every chat request
+// needs a freshly solved one. (A previous 4h cache replayed one envelope for
+// hours on end, and every send after the first was answered
+// 418 ERR_CHALLENGE.)
 
 import { invoke } from "@tauri-apps/api/core";
 import { solveChallenge, makeFeSignals } from "./challenge";
 
-const VQD_CACHE_KEY = "duckchat_vqd_hash";
-const VQD_TTL_MS = 4 * 60 * 60 * 1000; // 4h
-
-let memCache: { hash: string; ts: number } | null = null;
+/** Last solved envelope, kept only for the diagnostics panel. */
+let lastSolved: { hash: string; ts: number } | null = null;
 let feUserAgent: string | null = null;
 
 async function getFeUserAgent(): Promise<string> {
@@ -34,71 +34,21 @@ export function getFeSignals(): string {
   return makeFeSignals();
 }
 
-/** Get a usable X-Vqd-Hash-1 (cached), solving the PoW if needed. */
-export async function ensureVqdHash(force = false): Promise<string> {
-  if (!force && memCache && Date.now() - memCache.ts < VQD_TTL_MS) {
-    return memCache.hash;
-  }
-  if (!force) {
-    try {
-      const raw = localStorage.getItem(VQD_CACHE_KEY);
-      if (raw) {
-        const cached = JSON.parse(raw) as { hash: string; ts: number };
-        if (cached.hash && Date.now() - cached.ts < VQD_TTL_MS) {
-          memCache = cached;
-          return cached.hash;
-        }
-      }
-    } catch {
-      /* ignore */
-    }
-  }
+/** Solve a freshly issued challenge and return its X-Vqd-Hash-1. */
+export async function ensureVqdHash(): Promise<string> {
   const challenge = await invoke<string>("get_challenge");
   const { hash } = await solveChallenge(challenge, await getFeUserAgent());
-  memCache = { hash, ts: Date.now() };
-  try {
-    localStorage.setItem(VQD_CACHE_KEY, JSON.stringify(memCache));
-  } catch {
-    /* ignore */
-  }
+  lastSolved = { hash, ts: Date.now() };
   return hash;
 }
 
-/** Drop the cached hash (call on 418/429) and optionally re-solve. */
+/** Forget the last solved envelope (call on 418/429). */
 export function invalidateVqdHash(): void {
-  memCache = null;
-  try {
-    localStorage.removeItem(VQD_CACHE_KEY);
-  } catch {
-    /* ignore */
-  }
-}
-
-/** Manually set the hash (pasted from duck.ai DevTools). */
-export function setManualVqdHash(hash: string): void {
-  memCache = { hash: hash.trim(), ts: Date.now() };
-  try {
-    localStorage.setItem(VQD_CACHE_KEY, JSON.stringify(memCache));
-  } catch {
-    /* ignore */
-  }
+  lastSolved = null;
 }
 
 export function getCachedVqdInfo(): { hash: string; ts: number } | null {
-  if (memCache) return memCache;
-  try {
-    const raw = localStorage.getItem(VQD_CACHE_KEY);
-    if (raw) {
-      const cached = JSON.parse(raw) as { hash: string; ts: number };
-      if (cached.hash) {
-        memCache = cached;
-        return cached;
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-  return null;
+  return lastSolved;
 }
 
 export interface DurableStreamPayload {

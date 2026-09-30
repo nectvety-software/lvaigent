@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { X, Globe } from "lucide-react";
+import { t, useLang } from "../lib/i18n";
 
 interface Props {
   width: number;
@@ -71,6 +72,7 @@ export function initialBrowserSplit(stored: string | null): boolean {
  * Every number crosses the IPC boundary in PHYSICAL pixels (CSS x DPR).
  */
 export default function BrowserPane({ width, onClose, onResizeStart, paused }: Props) {
+  useLang();
   const bodyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -148,7 +150,7 @@ export default function BrowserPane({ width, onClose, onResizeStart, paused }: P
         role="separator"
         aria-orientation="vertical"
         onPointerDown={onResizeStart}
-        title="Kéo để thay đổi độ rộng Browser"
+        title={t("Kéo để thay đổi độ rộng Browser")}
         className="group/browser-handle absolute inset-y-0 left-0 z-20 flex w-2 shrink-0 cursor-col-resize items-center justify-center"
       >
         <span className="pointer-events-none absolute inset-y-3 w-0.5 rounded-full bg-foreground-subtlest/50 opacity-0 transition-opacity group-hover/browser-handle:opacity-100" />
@@ -162,7 +164,7 @@ export default function BrowserPane({ width, onClose, onResizeStart, paused }: P
         <button
           type="button"
           onClick={onClose}
-          title="Đóng Browser"
+          title={t("Đóng Browser")}
           aria-label="Close browser pane"
           className="flex size-8 items-center justify-center rounded-lg text-foreground-subtle transition-colors hover:bg-hover hover:text-foreground"
         >

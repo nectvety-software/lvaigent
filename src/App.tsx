@@ -11,6 +11,7 @@ import ReviewPanel from "./components/ReviewPanel";
 import CommandsManager from "./components/CommandsManager";
 import WorkspaceManager from "./components/WorkspaceManager";
 import Toast from "./components/Toast";
+import { t, useLang } from "./lib/i18n";
 
 /**
  * App shell, ported from ZCode's `DesktopWindowFrame` + `WorkspaceShellLayout`.
@@ -37,6 +38,7 @@ function storedWidth(key: string, fallback: number, min: number, max: number): n
 }
 
 function App() {
+  useLang();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarPanelW, setSidebarPanelW] = useState(() =>
     storedWidth("duckchat.sidebarPanelW", 260, 180, 420)
@@ -80,6 +82,9 @@ function App() {
     // Automatic duck.ai session upkeep: captcha polling (auto-dock), cookie
     // harvest from the bridge page, and background PoW warm-up.
     startBridgeWatcher();
+    // Plugin skills/commands live under <app data>/plugins, outside any project,
+    // so they are read once at boot and after every install/toggle.
+    void useStore.getState().reloadPluginContent();
     // The store already boots on the saved conversation, so this single call
     // resolves the folder that session worked in. Falling back to the most
     // recent workspace covers a fresh launch with history but no session.
@@ -172,7 +177,7 @@ function App() {
           <div
             role="separator"
             aria-orientation="vertical"
-            title="Kéo để thay đổi độ rộng sidebar"
+            title={t("Kéo để thay đổi độ rộng sidebar")}
             onPointerDown={(e) =>
               beginColDrag(
                 e,

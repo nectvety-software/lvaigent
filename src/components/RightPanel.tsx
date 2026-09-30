@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import { X, Terminal, FileText, Copy, Check, Trash2 } from "lucide-react";
 import { useStore } from "../store";
+// The tab map below uses `t` as its callback param, so alias the i18n helpers.
+import { t as tr, useLang } from "../lib/i18n";
 
 interface RightPanelProps {
   onClose: () => void;
@@ -18,6 +20,7 @@ type PanelTab = "terminal" | "output";
  *   - tabs are compact ghost buttons; the active one uses `bg-selected`
  */
 export default function RightPanel({ onClose, width, onResizeStart }: RightPanelProps) {
+  useLang();
   const { currentProject, terminalLines, clearTerminal, runShell } = useStore();
   const [activeTab, setActiveTab] = useState<PanelTab>("terminal");
   const [terminalInput, setTerminalInput] = useState("");
@@ -69,7 +72,7 @@ export default function RightPanel({ onClose, width, onResizeStart }: RightPanel
         role="separator"
         aria-orientation="vertical"
         onPointerDown={onResizeStart}
-        title="Kéo để thay đổi độ rộng panel"
+        title={tr("Kéo để thay đổi độ rộng panel")}
         className="group/rp absolute left-0 top-0 bottom-0 z-20 w-1.5 cursor-col-resize"
       >
         <span className="pointer-events-none absolute inset-y-6 left-0.5 w-0.5 rounded-full bg-foreground-subtlest/50 opacity-0 transition-opacity group-hover/rp:opacity-100" />
@@ -99,10 +102,10 @@ export default function RightPanel({ onClose, width, onResizeStart }: RightPanel
           ))}
         </div>
         <div className="flex items-center gap-0.5">
-          <button onClick={clearTerminal} title="Xóa terminal" className={iconButton}>
+          <button onClick={clearTerminal} title={tr("Xóa terminal")} className={iconButton}>
             <Trash2 className="size-4" />
           </button>
-          <button onClick={onClose} title="Đóng side pane" className={iconButton}>
+          <button onClick={onClose} title={tr("Đóng side pane")} className={iconButton}>
             <X className="size-4" />
           </button>
         </div>
@@ -120,7 +123,7 @@ export default function RightPanel({ onClose, width, onResizeStart }: RightPanel
                   className="text-ui-xs text-foreground-subtle hover:text-foreground flex items-center gap-0.5 transition-colors"
                 >
                   {copiedPath ? <Check className="size-3" /> : <Copy className="size-3" />}
-                  {copiedPath ? "Đã copy" : "Copy path"}
+                  {copiedPath ? tr("Đã copy") : "Copy path"}
                 </button>
               </div>
               <div className="text-ui-sm text-foreground font-medium truncate">{currentProject.name}</div>
@@ -135,7 +138,7 @@ export default function RightPanel({ onClose, width, onResizeStart }: RightPanel
           {/* Terminal output */}
           <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto px-3 py-2 font-mono text-ui-sm leading-relaxed">
             {terminalLines.length === 0 ? (
-              <div className="text-foreground-subtlest">Terminal trống. Gõ một lệnh bên dưới.</div>
+              <div className="text-foreground-subtlest">{tr("Terminal trống. Gõ một lệnh bên dưới.")}</div>
             ) : (
               terminalLines.map((l) => (
                 <div key={l.id} className={`py-0.5 whitespace-pre-wrap break-words ${lineColor(l.kind)}`}>
@@ -154,7 +157,7 @@ export default function RightPanel({ onClose, width, onResizeStart }: RightPanel
                 value={terminalInput}
                 onChange={(e) => setTerminalInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleTerminalExec()}
-                placeholder={currentProject ? "Lệnh trong project…" : "Lệnh…"}
+                placeholder={currentProject ? tr("Lệnh trong project…") : tr("Lệnh…")}
                 disabled={running}
                 className="flex-1 min-w-0 bg-transparent text-ui-sm text-foreground placeholder-foreground-subtlest outline-none font-mono"
               />
@@ -164,7 +167,7 @@ export default function RightPanel({ onClose, width, onResizeStart }: RightPanel
       ) : (
         <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2 font-mono text-ui-sm leading-relaxed">
           <div className="text-foreground-subtlest mb-2">
-            Nhật ký hoạt động của agent (lệnh agent chạy sẽ hiện ở cả Terminal).
+            {tr("Nhật ký hoạt động của agent (lệnh agent chạy sẽ hiện ở cả Terminal).")}
           </div>
           {terminalLines
             .filter((l) => l.kind === "info" || l.kind === "err")

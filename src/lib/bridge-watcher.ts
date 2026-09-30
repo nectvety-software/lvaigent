@@ -25,6 +25,10 @@ import { ensureVqdHash, getCachedVqdInfo, invalidateVqdHash } from "./duckai";
 import { useStore } from "../store";
 
 const CHALLENGE_POLL_MS = 2500;
+/** A parked send is only worth resending while it still reads as "this turn". */
+const PENDING_RETRY_TTL_MS = 10 * 60 * 1000;
+/** Gap between bridge re-attach attempts made for a parked send. */
+const RETRY_PROBE_MS = 15 * 1000;
 /** Tick that decides whether a scan is due. Also the retry gap while the
  *  cookie set or the PoW hash is still missing. */
 const SCAN_TICK_MS = 20 * 1000;
@@ -52,8 +56,10 @@ interface PollState {
   lastScanError: string | null;
   bridgeHealthy: boolean;
   scanning: boolean;
-  /** Interrupted send info for the captcha auto-retry. */
-  pendingRetry: { conversationId: string; content: string } | null;
+  /** Interrupted send info for the automatic retry. */
+  pendingRetry: { conversationId: string; content: string; at: number } | null;
+  /** Not before this moment: throttles bridge re-attach for a parked send. */
+  nextRetryProbeAt: number;
 }
 
 const state: PollState = {
@@ -72,6 +78,7 @@ const state: PollState = {
   bridgeHealthy: false,
   scanning: false,
   pendingRetry: null,
+  nextRetryProbeAt: 0,
 };
 
 /** Live status snapshot for the Settings panel. */
@@ -172,7 +179,7 @@ export async function scanBridgeSession(opts: {
       if (opts.pow !== false) {
         try {
           if (opts.force) invalidateVqdHash();
-          await ensureVqdHash(opts.force === true);
+          await ensureVqdHash();
           powDone = true;
           s.setVqdStatus("ready", Date.now());
         } catch (e) {
@@ -215,9 +222,65 @@ export async function refreshBridgeSession(): Promise<{ cookies: boolean; pow: b
   return { cookies: r.cookies.length > 0, pow: r.pow };
 }
 
-/** Remember the in-flight send so the watcher can retry after a captcha. */
-export function setPendingCaptchaRetry(conversationId: string, content: string): void {
-  state.pendingRetry = { conversationId, content };
+/**
+ * Remember a send that could not go out, so the watcher can retry it.
+ *
+ * Two reasons reach this: duck.ai showed a captcha, and the bridge webview was
+ * simply unreachable while the direct PoW transport was refused (418). Both
+ * need the same recovery — one automatic resend, on the bridge, once it answers.
+ */
+export function setPendingSendRetry(conversationId: string, content: string): void {
+  state.pendingRetry = { conversationId, content, at: Date.now() };
+}
+
+/**
+ * Drop a parked resend because that turn finally went out.
+ *
+ * Two mechanisms can carry the same failed send: the watcher (after a captcha)
+ * and `sendDuckChat`'s own transport fallback. Without this, a send that the
+ * fallback recovered from would still be parked, and the watcher would type it
+ * into duck.ai a second time.
+ */
+export function clearParkedSendRetry(conversationId: string): void {
+  if (state.pendingRetry?.conversationId === conversationId) state.pendingRetry = null;
+}
+
+/**
+ * Retry the parked send as soon as the bridge is attachable again.
+ *
+ * `via` only picks the wording; the gate is the driver itself, because a
+ * missing captcha is not proof the page is alive — `hasChallenge` also answers
+ * "no challenge" when there is no client to ask. The retry enters through the
+ * bridge-only path so it reuses the failed turn instead of appending the user's
+ * message a second time.
+ */
+export async function flushParkedRetry(via: "captcha" | "bridge"): Promise<void> {
+  const retry = state.pendingRetry;
+  if (!retry) return;
+  if (Date.now() - retry.at > PENDING_RETRY_TTL_MS) {
+    state.pendingRetry = null;
+    return;
+  }
+  // Probing the bridge is not free: `getDriver` re-navigates the parked webview
+  // when nothing answers, so hammering it on every poll would keep duck.ai
+  // reloading forever and never let it finish booting.
+  if (Date.now() < state.nextRetryProbeAt) return;
+  state.nextRetryProbeAt = Date.now() + RETRY_PROBE_MS;
+  const s = useStore.getState();
+  // Never interrupt a run the user started in the meantime.
+  if (s.conversations.some((c) => c.messages.some((m) => m.isStreaming))) return;
+  const driver = await getDriver(s.settings.duckaiCookies || "").catch(() => null);
+  if (!driver || !driver.healthy) return;
+  state.pendingRetry = null;
+  s.addToast(
+    via === "captcha"
+      ? "Captcha đã giải — gửi lại tin nhắn…"
+      : "Bridge lvaigent đã trả lời — gửi lại tin nhắn…",
+    "success"
+  );
+  void useStore
+    .getState()
+    .sendDuckChat(retry.conversationId, retry.content, false, { preferBridge: true });
 }
 
 /** Float the embedded duck.ai view over the app so the captcha is solvable. */
@@ -225,7 +288,13 @@ async function dockBridge(): Promise<void> {
   await invoke("show_bridge_window", { show: true }).catch(() => {});
 }
 
-async function undockBridge(): Promise<void> {
+/**
+ * Hide the bridge window again and let the pane re-measure.
+ *
+ * Exported because a send that duck.ai already answered also tucks the window
+ * away, and that layout chore must not be able to fail the turn.
+ */
+export async function undockBridge(): Promise<void> {
   await invoke("show_bridge_window", { show: false }).catch(() => {});
   // BrowserPane re-measures and pulls the view back to its docked rect.
   window.dispatchEvent(new Event("duckai:relayout"));
@@ -309,13 +378,11 @@ async function pollChallenge(): Promise<void> {
         state.autoDockedByUs = false;
         await undockBridge();
       }
-      // Solved: retry the interrupted send once, from the chat UI's entry point.
-      const retry = state.pendingRetry;
-      state.pendingRetry = null;
-      if (retry) {
-        useStore.getState().addToast("Captcha đã giải — gửi lại tin nhắn…", "success");
-        void useStore.getState().sendDuckChat(retry.conversationId, retry.content);
-      }
+      await flushParkedRetry("captcha");
+    } else if (!up) {
+      // No challenge was ever up, so this is the "the bridge simply came back"
+      // case: a send that PoW refused and the bridge dropped is still parked.
+      await flushParkedRetry("bridge");
     }
   } catch {
     state.lastPollOk = false;
@@ -373,4 +440,8 @@ export function stopBridgeWatcherForTests(): void {
   if (state.timer) clearInterval(state.timer);
   if (state.scanTimer) clearInterval(state.scanTimer);
   state.started = false;
+  // A parked send from an earlier case would otherwise read as "this failure
+  // queued a retry" in the next one.
+  state.pendingRetry = null;
+  state.nextRetryProbeAt = 0;
 }

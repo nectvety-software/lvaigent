@@ -10,6 +10,7 @@ import {
   X,
 } from "lucide-react";
 import WorkspaceSwitcher from "./WorkspaceSwitcher";
+import { t, useLang } from "../lib/i18n";
 
 interface TitleBarProps {
   onToggleSidebar: () => void;
@@ -42,6 +43,7 @@ export default function TitleBar({
   browserSplit,
   onToggleSplit,
 }: TitleBarProps) {
+  useLang();
   const [maximized, setMaximized] = useState(false);
 
   // Null when running outside the Tauri WebView (e.g. plain-browser preview).
@@ -108,7 +110,7 @@ export default function TitleBar({
             onClick={onToggleSidebar}
             style={NO_DRAG}
             className={headerButton}
-            title={sidebarOpen ? "Ẩn sidebar" : "Hiện sidebar"}
+            title={sidebarOpen ? t("Ẩn sidebar") : t("Hiện sidebar")}
             aria-label="Toggle sidebar"
           >
             {sidebarOpen ? <PanelLeftClose className="size-4" /> : <PanelLeftOpen className="size-4" />}
@@ -138,8 +140,8 @@ export default function TitleBar({
             className={`${headerButton} ${browserSplit ? "bg-selected text-foreground" : ""}`}
             title={
               browserSplit
-                ? "Ẩn trình duyệt lvaigent"
-                : "Hiện trình duyệt lvaigent cạnh khu vực AI Agents"
+                ? t("Ẩn trình duyệt lvaigent")
+                : t("Hiện trình duyệt lvaigent cạnh khu vực AI Agents")
             }
             aria-label="Browser split"
           >
@@ -152,7 +154,7 @@ export default function TitleBar({
             onClick={onToggleRightPanel}
             style={NO_DRAG}
             className={`${headerButton} ${rightPanelOpen ? "bg-selected text-foreground" : ""}`}
-            title={rightPanelOpen ? "Ẩn side pane" : "Hiện side pane"}
+            title={rightPanelOpen ? t("Ẩn side pane") : t("Hiện side pane")}
             aria-label="Toggle side pane"
           >
             {rightPanelOpen ? <PanelRightClose className="size-4" /> : <PanelRightOpen className="size-4" />}

@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { AttachmentKind } from "../types";
+import { t, useLang } from "../lib/i18n";
 import { PREVIEW_CHARS, previewDataUrl, previewText, textExcerpt } from "../lib/attachment-preview";
 
+/** Raw Vietnamese keys; resolved through the dictionary at render time. */
 const KIND_LABEL: Record<AttachmentKind, string> = {
   file: "tệp",
   image: "ảnh",
@@ -38,6 +40,7 @@ export default function HoverPreview({
   placement?: "above" | "below";
   children: ReactNode;
 }) {
+  useLang();
   const [open, setOpen] = useState(false);
   const [state, setState] = useState<"loading" | "ready" | "empty">("loading");
   const [dataUrl, setDataUrl] = useState<string | null>(null);
@@ -104,19 +107,19 @@ export default function HoverPreview({
               {name}
             </span>
             <span className="text-ui-xs text-foreground-subtlest shrink-0">
-              {KIND_LABEL[kind]}
+              {t(KIND_LABEL[kind])}
             </span>
           </div>
 
           {state === "loading" && (
             <div className="h-14 grid place-items-center text-ui-xs text-foreground-subtlest">
-              Đang tải…
+              {t("Đang tải…")}
             </div>
           )}
 
           {state === "empty" && (
             <div className="h-14 grid place-items-center px-2 text-center text-ui-xs text-foreground-subtlest">
-              {EMPTY_HINT[kind]}
+              {t(EMPTY_HINT[kind])}
             </div>
           )}
 

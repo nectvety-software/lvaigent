@@ -18,6 +18,17 @@ const MAX_GREP_RESULTS = 120;
 const MAX_TOOL_MSG_CHARS = 20_000;
 
 /**
+ * duck.ai's composer is a hard 16,000-character field.
+ *
+ * Over that it answers "Please try a shorter message." and refuses the send —
+ * which from the app looked like a mysterious bridge failure, then a refused PoW
+ * retry, and finally the 418 notice. The limit is invisible on the API and PoW
+ * wire paths (per-message, and the Rust backend folds nothing), so only the
+ * text typed into the SPA is budgeted here.
+ */
+export const SPA_MESSAGE_LIMIT = 16_000;
+
+/**
  * How a transport carries the system prompt.
  *
  * duck.ai rejects `role: "system"`, so its payloads fold the system prompt into
@@ -63,6 +74,58 @@ export function composeAgentRequest(input: {
     };
   }
   return { system: systemPrompt, userText: userBody };
+}
+
+/**
+ * Room left for the project-context block in one folded SPA turn.
+ *
+ * Negative means the turn cannot be sent at all: the prompt and the user's own
+ * words already exceed the composer on their own, so no amount of dropped
+ * context helps and the send should be refused before either transport runs.
+ */
+export function spaContextBudget(
+  systemPrompt: string,
+  userContent: string,
+  limit: number = SPA_MESSAGE_LIMIT
+): number {
+  // Two "\n\n" joiners; conservative when the system prompt is switched off.
+  return limit - systemPrompt.length - userContent.length - 4;
+}
+
+/**
+ * Assemble one bridge round-trip inside the composer limit.
+ *
+ * Whole `[tool_result]` blocks are dropped oldest-first, because the model
+ * copes well with "an earlier round's output is missing" and badly with a file
+ * cut mid-statement, which it will read as complete code. Only when a single
+ * newest result is over budget by itself does it get sliced — and the slice is
+ * labelled, so it cannot pass for the whole log. The tool-protocol reminder is
+ * never dropped: it is what keeps the tools live from round 2 onward.
+ */
+export function clampToolFeedback(
+  results: readonly string[],
+  protocol: string,
+  limit: number = SPA_MESSAGE_LIMIT
+): { text: string; dropped: number } {
+  const tail = protocol ? `\n\n${protocol}` : "";
+  const kept: string[] = [];
+  let used = tail.length;
+  for (let i = results.length - 1; i >= 0; i--) {
+    const cost = results[i].length + (kept.length > 0 ? 2 : 0);
+    if (used + cost > limit) break;
+    kept.unshift(results[i]);
+    used += cost;
+  }
+  if (kept.length === 0 && results.length > 0) {
+    const mark = "\n... (tool output truncated)";
+    const room = limit - tail.length - mark.length;
+    if (room > 0) kept.push(`${results[results.length - 1].slice(0, room)}${mark}`);
+  }
+  const body = kept.join("\n\n");
+  return {
+    text: body ? `${body}${tail}` : protocol,
+    dropped: results.length - kept.length,
+  };
 }
 
 /** Shared rule text prepended in PLAN mode: tools that mutate are disabled. */

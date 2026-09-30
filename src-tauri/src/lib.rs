@@ -15,7 +15,7 @@ const DUCKAI_BASE: &str = "https://duck.ai";
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 // Pinned front-end version observed in the duck.ai SPA. If chat starts failing
 // with 400s, refresh this from the live bundle (entry.duckai.*.js).
-const FE_VERSION: &str = "serp_20260825_094908_ET-b43980abc826d50478fe6ad7605a6087b9b31757";
+const FE_VERSION: &str = "serp_20260929_164831_ET-9cf30bed9ed32b02fdfb22cd5234989c3af03e0e";
 // duck.ai rejects oversized payloads with 429 ERR_INPUT_LIMIT (~20KB).
 const MAX_BODY_BYTES: usize = 18 * 1024;
 
@@ -503,29 +503,33 @@ async fn duckchat_stream(
 
     // 2. Build body, truncating the first (context-heavy) message if needed.
     //
-    // Mirrors the reference client (p2d-duck): toolChoice has exactly these
-    // four booleans, plus the canUse* null fields. Extra tool keys or a bare
-    // {} here can trigger ERR_BAD_REQUEST.
+    // Field set mirrored from a live duck.ai capture (2026-09-30): message
+    // `content` is an ARRAY of `{type:"text"}` parts, `reasoningEffort` and
+    // `canShowGreeting` are required, and `metadata.toolChoice` no longer
+    // exists. Sending the old shape is what surfaces as the opaque
+    // 400 ERR_BAD_REQUEST / 418 ERR_CHALLENGE.
     let mut body = serde_json::json!({
         "model": model,
-        "messages": msgs,
+        "messages": msgs
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "role": m.role,
+                    "content": [{ "type": "text", "text": m.content }],
+                })
+            })
+            .collect::<Vec<serde_json::Value>>(),
         "canUseTools": false,
-        "metadata": {
-            "toolChoice": {
-                "NewsSearch": false,
-                "VideosSearch": false,
-                "LocalSearch": false,
-                "WeatherForecast": false,
-            }
-        },
+        "reasoningEffort": "none",
         "canUseApproxLocation": null,
         "canDelegateImageGeneration": null,
+        "canShowGreeting": false,
         "durableStream": durable_stream,
     });
     let mut body_str = serde_json::to_string(&body).map_err(|e| e.to_string())?;
     if body_str.len() > MAX_BODY_BYTES {
         let overflow = body_str.len() - MAX_BODY_BYTES;
-        if let Some(first) = body["messages"][0].get_mut("content") {
+        if let Some(first) = body["messages"][0]["content"][0].get_mut("text") {
             if let Some(s) = first.as_str() {
                 let cut = overflow + 200;
                 let new_content = if s.len() > cut + 2000 {
@@ -2306,6 +2310,167 @@ mod tests {
 
         std::fs::remove_dir_all(&base).ok();
     }
+
+    /// The plugin fetcher is the one place the app reaches out to a third-party
+    /// host, so its allowlist is matched exactly: no scheme downgrade, no
+    /// credentials, no port trick, no suffix that would admit a lookalike host.
+    #[test]
+    fn plugin_url_allowlist_is_exact() {
+        assert!(is_trusted_plugin_url(
+            "https://raw.githubusercontent.com/zai-org/zcode-plugins/main/marketplace.json"
+        ));
+        assert!(is_trusted_plugin_url(
+            "https://api.github.com/repos/zai-org/zcode-plugins/git/trees/main?recursive=1"
+        ));
+
+        assert!(!is_trusted_plugin_url("http://raw.githubusercontent.com/a/b"));
+        assert!(!is_trusted_plugin_url("https://raw.githubusercontent.com.evil/x/y"));
+        assert!(!is_trusted_plugin_url("https://evil.com/#https://raw.githubusercontent.com"));
+        // Credentials and an explicit port both redirect the same hostname.
+        assert!(!is_trusted_plugin_url(
+            "https://user:pass@raw.githubusercontent.com/a/b"
+        ));
+        assert!(!is_trusted_plugin_url("https://raw.githubusercontent.com@evil.com/a/b"));
+        assert!(!is_trusted_plugin_url("https://raw.githubusercontent.com:8080/a/b"));
+        // Subdomains of the allowlisted hosts are not themselves allowlisted.
+        assert!(!is_trusted_plugin_url("https://x.codeload.github.com/a/b"));
+        // The GitHub media/camo hosts proxy arbitrary URLs; they are not sources.
+        assert!(!is_trusted_plugin_url("https://camo.githubusercontent.com/a/b"));
+        assert!(!is_trusted_plugin_url("not a url"));
+        assert!(!is_trusted_plugin_url(""));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin marketplace (ZCode-compatible plugins): transport + install root
+// ---------------------------------------------------------------------------
+
+/// The only hosts a plugin download may come from. lvaigent installs text files
+/// that become instructions the agent follows, so the source is allowlisted
+/// rather than "any HTTPS URL the frontend happens to ask for".
+const PLUGIN_HOSTS: &[&str] = &[
+    "raw.githubusercontent.com",
+    "api.github.com",
+    "codeload.github.com",
+    "cdn-zcode.z.ai",
+];
+
+fn is_trusted_plugin_url(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    if parsed.scheme() != "https" || parsed.username() != "" || parsed.password().is_some() {
+        return false;
+    }
+    // An explicit port would point the same hostname at another machine.
+    if parsed.port_or_known_default() != Some(443) {
+        return false;
+    }
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    // Exact hosts only. A suffix match would silently admit whatever is
+    // registered under the domain — `camo.githubusercontent.com` proxies
+    // arbitrary signed URLs, which is not a plugin source.
+    PLUGIN_HOSTS.contains(&host)
+}
+
+/// GET a marketplace file (JSON manifest or markdown) as UTF-8 text.
+///
+/// Fetching goes through Rust rather than the webview's `fetch` because the app
+/// origin is `http://tauri.localhost`: a cross-scheme request from it is exactly
+/// the kind WebView2 blocks, and the app already routes every network call here.
+#[command]
+async fn http_get_text(url: String, max_bytes: Option<usize>) -> Result<String, String> {
+    if !is_trusted_plugin_url(&url) {
+        return Err(format!("URL is not on the plugin source allowlist: {url}"));
+    }
+    let cap = max_bytes.unwrap_or(2_000_000).clamp(1, 8_000_000);
+    let client = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .redirect(reqwest::redirect::Policy::limited(4))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(25))
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+    // A redirect can leave the allowlist (GitHub answers some API paths with a
+    // 301 to another host), so the *final* URL is checked too.
+    if !is_trusted_plugin_url(resp.url().as_str()) {
+        return Err(format!(
+            "redirect left the plugin source allowlist: {}",
+            resp.url()
+        ));
+    }
+    let status = resp.status();
+    if !status.is_success() {
+        // 403 from api.github.com means the unauthenticated rate limit (60
+        // req/hour) is spent — a different problem than a missing plugin, and
+        // the UI says so differently.
+        let code = status.as_u16();
+        let hint = if code == 403 { " (rate limit?)" } else { "" };
+        return Err(format!("HTTP {code}{hint} for {url}"));
+    }
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    if bytes.len() > cap {
+        return Err(format!("response too large: {} bytes", bytes.len()));
+    }
+    String::from_utf8(bytes.to_vec()).map_err(|_| "response is not UTF-8 text".to_string())
+}
+
+/// Folder installed plugins live in: `<app data>/plugins`, created on demand.
+///
+/// Deliberately outside any project: a plugin is a user-level capability, and
+/// writing it into the open project would put third-party instructions in the
+/// user's repository.
+#[command]
+fn plugins_dir(app: tauri::AppHandle) -> Result<String, String> {
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("plugins");
+    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    Ok(root.to_string_lossy().to_string())
+}
+
+/// Names of the installed plugin folders (immediate children only).
+#[command]
+async fn list_plugin_dirs(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let root = plugins_dir(app)?;
+    let mut out = Vec::new();
+    let mut entries = tokio::fs::read_dir(&root).await.map_err(|e| e.to_string())?;
+    while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
+        if entry.metadata().await.map(|m| m.is_dir()).unwrap_or(false) {
+            out.push(entry.file_name().to_string_lossy().to_string());
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Delete one installed plugin folder. The path must resolve to a direct child
+/// of the plugins root, so this can never become "delete anything".
+#[command]
+async fn remove_plugin_dir(app: tauri::AppHandle, name: String) -> Result<(), String> {
+    let root = plugins_dir(app)?;
+    let root_c = std::fs::canonicalize(&root).map_err(|e| e.to_string())?;
+    if name.contains('/') || name.contains('\\') || name == "." || name == ".." {
+        return Err("Not a plugin folder name".into());
+    }
+    let target = std::path::absolute(root_c.join(&name)).map_err(|e| e.to_string())?;
+    let resolved = resolve_existing_prefix(&lexical_normalize(&target))
+        .filter(|p| p != &root_c && p.starts_with(&root_c))
+        .ok_or_else(|| "Refusing to remove outside the plugins folder".to_string())?;
+    if !resolved.is_dir() {
+        return Err("Plugin folder does not exist".into());
+    }
+    tokio::fs::remove_dir_all(&resolved)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -2341,6 +2506,10 @@ pub fn run() {
             show_bridge_window,
             place_duckai,
             open_in_explorer,
+            http_get_text,
+            plugins_dir,
+            list_plugin_dirs,
+            remove_plugin_dir,
             read_project_tree,
             read_file_content,
             read_file_preview,

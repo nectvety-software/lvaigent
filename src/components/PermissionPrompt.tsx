@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal, ShieldAlert, ShieldOff, Play, Ban, CheckCheck, FileEdit } from "lucide-react";
+import { t, tf, useLang } from "../lib/i18n";
 import type { ApprovalDecision } from "../types";
 
 interface PermissionPromptProps {
@@ -84,7 +85,10 @@ function describeRequest(tool: string, args: Record<string, string>): {
     const bytes = (args.content ?? "").length;
     return {
       Icon: FileEdit,
-      text: `${args.path ?? "(no path)"} — sẽ ghi đè toàn bộ file (${bytes} ký tự)`,
+      text: tf("{path} — sẽ ghi đè toàn bộ file ({count} ký tự)", {
+        path: args.path ?? "(no path)",
+        count: bytes,
+      }),
     };
   }
   return { Icon: Terminal, text: JSON.stringify(args) };
@@ -100,6 +104,7 @@ function describeRequest(tool: string, args: Record<string, string>): {
  *     can be targeted without reading the raw command
  */
 export default function PermissionPrompt({ tool, args, onDecide }: PermissionPromptProps) {
+  useLang();
   const [selectedIndex, setSelectedIndex] = useState(0);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
@@ -138,18 +143,19 @@ export default function PermissionPrompt({ tool, args, onDecide }: PermissionPro
       <div className="dialog-surface w-[460px] max-w-[92vw] p-4 animate-scale-in" role="dialog" aria-modal="true">
         <div className="flex items-center gap-2 mb-3">
           <request.Icon className="size-4 text-foreground-subtle" />
-          <span className="text-ui-base font-semibold text-foreground">Cần cấp quyền</span>
+          <span className="text-ui-base font-semibold text-foreground">{t("Cần cấp quyền")}</span>
         </div>
 
         <p className="text-ui-xs text-foreground-subtle mb-2">
-          Agent muốn dùng <span className="font-mono text-foreground">{tool}</span> trong project của bạn:
+          {t("Agent muốn dùng")} <span className="font-mono text-foreground">{tool}</span>{" "}
+          {t("trong project của bạn:")}
         </p>
 
         <pre className="p-2.5 rounded-md bg-terminal-bg border border-border text-ui-sm font-mono text-terminal-fg whitespace-pre-wrap break-words mb-3 max-h-40 overflow-y-auto">
           {request.text}
         </pre>
 
-        <div className="flex flex-col gap-0.5" role="listbox" aria-label="Tuỳ chọn cấp quyền">
+        <div className="flex flex-col gap-0.5" role="listbox" aria-label={t("Tuỳ chọn cấp quyền")}>
           {OPTIONS.map((option, index) => {
             const isSelected = index === selectedIndex;
             const { Icon } = option;
@@ -181,10 +187,10 @@ export default function PermissionPrompt({ tool, args, onDecide }: PermissionPro
                       option.tone === "warning" ? "text-warning" : "text-foreground"
                     }`}
                   >
-                    {option.label}
+                    {t(option.label)}
                   </span>
                   <span className="block text-ui-xs text-foreground-subtlest">
-                    {option.description}
+                    {t(option.description)}
                   </span>
                 </span>
               </button>
@@ -193,7 +199,7 @@ export default function PermissionPrompt({ tool, args, onDecide }: PermissionPro
         </div>
 
         <p className="text-ui-xs text-foreground-subtlest mt-3">
-          Dùng ↑ / ↓ để chọn, Enter để xác nhận, Esc để từ chối.
+          {t("Dùng ↑ / ↓ để chọn, Enter để xác nhận, Esc để từ chối.")}
         </p>
       </div>
     </div>

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Eye, EyeOff, Trash2, X } from "lucide-react";
 import Select from "./Select";
+import { t as tr, useLang } from "../lib/i18n";
 import type { ApiFormat, Provider } from "../types";
 
 interface Props {
@@ -32,6 +33,7 @@ const API_TYPES: { value: ApiFormat; label: string }[] = [
 /** ZCode-style "Add provider" wizard (single step): template → API type →
  *  base URL → key → model ids. */
 export default function AddProviderDialog({ onClose, onAdd }: Props) {
+  useLang();
   const [templateId, setTemplateId] = useState("openai");
   const [customName, setCustomName] = useState("");
   const [apiFormat, setApiFormat] = useState<ApiFormat>("openai");
@@ -82,7 +84,7 @@ export default function AddProviderDialog({ onClose, onAdd }: Props) {
           <button
             onClick={onClose}
             className="p-1.5 rounded-lg hover:bg-surface-hover text-foreground-subtlest hover:text-foreground transition-colors"
-            title="Đóng"
+            title={tr("Đóng")}
           >
             <X size={15} />
           </button>
@@ -95,13 +97,13 @@ export default function AddProviderDialog({ onClose, onAdd }: Props) {
               ariaLabel="Provider"
               value={templateId}
               onChange={applyTemplate}
-              options={TEMPLATES.map((t) => ({ value: t.id, label: t.label }))}
+              options={TEMPLATES.map((t) => ({ value: t.id, label: tr(t.label) }))}
             />
             {isCustom && (
               <input
                 value={customName}
                 onChange={(e) => setCustomName(e.target.value)}
-                placeholder="Tên provider (vd: MiniMax CN)"
+                placeholder={tr("Tên provider (vd: MiniMax CN)")}
                 className="input-field mt-2 py-1.5 text-ui-sm"
               />
             )}
@@ -140,7 +142,7 @@ export default function AddProviderDialog({ onClose, onAdd }: Props) {
               <button
                 onClick={() => setShowKey((v) => !v)}
                 className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded text-foreground-subtlest hover:text-foreground transition-colors"
-                title={showKey ? "Ẩn key" : "Hiện key"}
+                title={showKey ? tr("Ẩn key") : tr("Hiện key")}
               >
                 {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
               </button>
@@ -172,7 +174,7 @@ export default function AddProviderDialog({ onClose, onAdd }: Props) {
                     onClick={() => setModelIds((m) => m.filter((_, j) => j !== i))}
                     disabled={modelIds.length === 1 && !v}
                     className="p-1.5 rounded-lg hover:bg-destructive/15 text-foreground-subtlest hover:text-destructive transition-colors disabled:opacity-30"
-                    title="Xóa dòng"
+                    title={tr("Xóa dòng")}
                   >
                     <Trash2 size={13} />
                   </button>

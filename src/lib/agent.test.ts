@@ -6,9 +6,12 @@ import {
   toolCallText,
   composeAgentRequest,
   buildToolProtocolReminder,
+  clampToolFeedback,
   diagnoseCommandFailure,
   looksLikeToolRefusal,
+  spaContextBudget,
   AGENT_SYS_PROMPT,
+  SPA_MESSAGE_LIMIT,
 } from "./agent";
 import { ALL_SKILL_IDS } from "./skills";
 
@@ -347,5 +350,51 @@ describe("composeAgentRequest", () => {
     });
     expect(req.system).toBe("");
     expect(req.userText).toBe("[Codebase]\nfiles: 3\n\nhello");
+  });
+});
+
+/**
+ * duck.ai's composer is a hard 16,000-character field: over it the page answers
+ * "Please try a shorter message." and rejects the send. That looked like the
+ * bridge being broken plus a refused PoW retry, i.e. the 418 notice, for a
+ * message that could never have gone out at all.
+ */
+describe("a turn bound for duck.ai fits the composer limit", () => {
+  const repeat = (n: number) => "x".repeat(n);
+
+  it("spaContextBudget leaves room for the joiners", () => {
+    expect(spaContextBudget("S", "U", 100)).toBe(94);
+    // Negative means the turn is unsendable, so the caller must refuse it.
+    expect(spaContextBudget(repeat(9000), repeat(7101))).toBeLessThan(0);
+  });
+
+  it("leaves a feedback round that already fits untouched", () => {
+    const res = clampToolFeedback(["[tool_result] a", "[tool_result] b"], "PROTOCOL");
+    expect(res.text).toBe("[tool_result] a\n\n[tool_result] b\n\nPROTOCOL");
+    expect(res.dropped).toBe(0);
+  });
+
+  it("drops whole older results, keeping the newest and the protocol", () => {
+    // A sliced file dump reads as complete code to the model; a missing earlier
+    // round is a gap it can work around.
+    const res = clampToolFeedback([`old ${repeat(16000)}`, "newest"], "PROTOCOL");
+    expect(res.text).toBe(`newest\n\nPROTOCOL`);
+    expect(res.dropped).toBe(1);
+    expect(res.text.length).toBeLessThanOrEqual(SPA_MESSAGE_LIMIT);
+  });
+
+  it("slices a single oversized result, but labels the cut", () => {
+    // Reachable on its own: one tool message is capped at 20,000 characters,
+    // which is more than the composer takes.
+    const res = clampToolFeedback([repeat(20000)], "PROTOCOL");
+    expect(res.text.length).toBeLessThanOrEqual(SPA_MESSAGE_LIMIT);
+    expect(res.text.endsWith("PROTOCOL")).toBe(true);
+    expect(res.text).toContain("(tool output truncated)");
+  });
+
+  it("still sends the protocol when nothing else fits", () => {
+    const proto = repeat(SPA_MESSAGE_LIMIT);
+    const res = clampToolFeedback([], proto);
+    expect(res.text).toBe(proto);
   });
 });

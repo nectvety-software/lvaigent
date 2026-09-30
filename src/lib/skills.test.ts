@@ -228,6 +228,54 @@ describe("prompt sections", () => {
     expect(noAttachments).toContain("[AGENTS.md]");
   });
 
+  /**
+   * duck.ai's composer takes 16,000 characters, and the folded first turn is
+   * prompt + this block + the user's own words, so the block is what has to give.
+   * Giving way means dropping WHOLE sections — a file cut mid-statement reads as
+   * complete code to the model — in the order: attachments, then AGENTS.md, then
+   * the codebase map, and the code the user named last.
+   */
+  it("gives way section by section under a character budget", () => {
+    const project = {
+      id: "p",
+      name: "demo",
+      path: "D:/demo",
+      files: [{ name: "a.ts", path: "a.ts", is_dir: false }],
+      openedAt: 1,
+    };
+    const attached = [
+      {
+        name: "big.ts",
+        path: "D:/demo/big.ts",
+        content: "z".repeat(4000),
+        truncated: false,
+        kind: "file" as const,
+      },
+    ];
+    const named = [{ path: "src/x.ts", content: "export const x = 1;", truncated: false }];
+    const sections = [...ALL_PROMPT_SECTION_IDS];
+    const at = (text: string, marker: string) => text.indexOf(`\n\n${marker}`);
+    const withBudget = (maxChars: number) =>
+      buildContextBlock(project, attached, null, "# rules", sections, named, maxChars);
+
+    const full = buildContextBlock(project, attached, null, "# rules", sections, named)!;
+    expect(full).toContain("[File: D:/demo/big.ts]");
+
+    const noAttachments = withBudget(at(full, "[File:"))!;
+    expect(noAttachments).toBe(full.slice(0, at(full, "[File:")));
+
+    const noAgents = withBudget(at(noAttachments, "[AGENTS.md]"))!;
+    expect(noAgents).toBe(noAttachments.slice(0, at(noAttachments, "[AGENTS.md]")));
+
+    const noMap = withBudget(at(noAgents, "[Project:"))!;
+    expect(noMap).not.toContain("[Project: demo");
+    // The pre-read code survives to the end, intact.
+    expect(noMap).toContain("export const x = 1;");
+
+    // No room for even that means no block at all, not a sliced one.
+    expect(withBudget(30)).toBeNull();
+  });
+
   it("puts the files the user named first, with their content", () => {
     const project = {
       id: "p",

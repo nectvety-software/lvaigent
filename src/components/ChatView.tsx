@@ -26,6 +26,7 @@ import {
   Hammer as HammerIcon,
 } from "lucide-react";
 import { useStore, getSlashCommands } from "../store";
+import { t, tf, useLang } from "../lib/i18n";
 import type { FileNode } from "../types";
 import MessageBubble from "./MessageBubble";
 import HoverPreview from "./HoverPreview";
@@ -46,6 +47,7 @@ const IMAGE_FILTER_EXTS = [
 ];
 
 export default function ChatView() {
+  useLang();
   const {
     conversations,
     activeConversationId,
@@ -149,7 +151,7 @@ export default function ChatView() {
           /* fall through to a normal send */
         }
       } else {
-        useStore.getState().addToast(`Lệnh không rõ: ${name} — /init /undo /redo /stop /clear`, "error");
+        useStore.getState().addToast(tf("Lệnh không rõ: {name} — /init /undo /redo /stop /clear", { name }), "error");
         return;
       }
     }
@@ -197,10 +199,10 @@ export default function ChatView() {
   };
 
   const suggestions = [
-    { icon: FileQuestion, text: "Giải thích luồng của đoạn code này" },
-    { icon: Bug, text: "Tìm và sửa lỗi trong project" },
-    { icon: Hammer, text: "Thêm một tính năng nhỏ" },
-    { icon: FolderOpen, text: "Viết test cho module chính" },
+    { icon: FileQuestion, text: t("Giải thích luồng của đoạn code này") },
+    { icon: Bug, text: t("Tìm và sửa lỗi trong project") },
+    { icon: Hammer, text: t("Thêm một tính năng nhỏ") },
+    { icon: FolderOpen, text: t("Viết test cho module chính") },
   ];
 
   /**
@@ -220,7 +222,7 @@ export default function ChatView() {
         tone: "border-border bg-surface text-foreground-subtle",
         Icon: LoaderCircle,
         iconClass: "size-4 shrink-0 animate-spin",
-        message: path ? `Đang mở project "${path}"…` : "Đang mở project…",
+        message: path ? tf('Đang mở project "{path}"…', { path }) : t("Đang mở project…"),
         retry: false,
       };
     }
@@ -229,9 +231,10 @@ export default function ChatView() {
         tone: "border-destructive/40 bg-destructive/10 text-destructive",
         Icon: TriangleAlert,
         iconClass: "size-4 shrink-0",
-        message: `Không mở được project${path ? ` "${path}"` : ""}: ${
-          error ?? "lỗi không rõ"
-        }. Kiểm tra thư mục còn tồn tại không.`,
+        message: tf('Không mở được project{path}: {error}. Kiểm tra thư mục còn tồn tại không.', {
+          path: path ? ` "${path}"` : "",
+          error: error ?? t("lỗi không rõ"),
+        }),
         retry: true,
       };
     }
@@ -239,8 +242,9 @@ export default function ChatView() {
       tone: "border-warning/40 bg-warning/10 text-warning",
       Icon: FolderOpen,
       iconClass: "size-4 shrink-0",
-      message:
+      message: t(
         "Chưa mở project — agent không đọc/sửa được file. Hãy mở project trước khi yêu cầu chỉnh sửa code.",
+      ),
       retry: false,
     };
   })();
@@ -248,13 +252,13 @@ export default function ChatView() {
   const pickProjectFolder = async () => {
     try {
       const openDialog = await import("@tauri-apps/plugin-dialog").then((m) => m.open);
-      const selected = await openDialog({ directory: true, multiple: false, title: "Mở Project" });
+      const selected = await openDialog({ directory: true, multiple: false, title: t("Mở Project") });
       if (selected) {
         const folderPath = Array.isArray(selected) ? selected[0] : selected;
         useStore.getState().setActiveWorkspace(folderPath);
       }
     } catch (e) {
-      useStore.getState().addToast(`Không mở được project: ${e}`, "error");
+      useStore.getState().addToast(tf("Không mở được project: {error}", { error: String(e) }), "error");
     }
   };
 
@@ -269,14 +273,14 @@ export default function ChatView() {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const picked = await open(
         what === "folder"
-          ? { directory: true, multiple: true, title: "Chọn thư mục để đính kèm" }
+          ? { directory: true, multiple: true, title: t("Chọn thư mục để đính kèm") }
           : {
               multiple: true,
-              title: what === "image" ? "Chọn ảnh để đính kèm" : "Chọn tệp để đính kèm",
+              title: what === "image" ? t("Chọn ảnh để đính kèm") : t("Chọn tệp để đính kèm"),
               defaultPath: currentProject?.path,
               filters:
                 what === "image"
-                  ? [{ name: "Ảnh", extensions: IMAGE_FILTER_EXTS }]
+                  ? [{ name: t("Ảnh"), extensions: IMAGE_FILTER_EXTS }]
                   : undefined,
             }
       );
@@ -289,7 +293,7 @@ export default function ChatView() {
         await store.attachFromPaths(paths);
       }
     } catch (e) {
-      store.addToast(`Không nhập được tệp: ${e}`, "error");
+      store.addToast(tf("Không nhập được tệp: {error}", { error: String(e) }), "error");
     }
   };
 
@@ -309,7 +313,7 @@ export default function ChatView() {
               className="shrink-0 flex items-center gap-1 h-6 px-2 rounded-md text-ui-xs font-medium bg-foreground/10 hover:bg-foreground/20 transition-colors"
             >
               <RefreshCw className="size-3" />
-              Thử lại
+              {t("Thử lại")}
             </button>
           )}
           <button
@@ -317,7 +321,7 @@ export default function ChatView() {
             className="shrink-0 flex items-center gap-1 h-6 px-2 rounded-md text-ui-xs font-medium bg-foreground/10 hover:bg-foreground/20 transition-colors"
           >
             <FolderOpen className="size-3" />
-            Mở project
+            {t("Mở project")}
           </button>
         </div>
       )}
@@ -332,8 +336,8 @@ export default function ChatView() {
             <h2 className="text-ui-lg font-semibold text-foreground mb-1.5">lvaigent</h2>
             <p className="text-ui-base text-foreground-subtle max-w-sm mb-7">
               {currentProject
-                ? `Đang làm việc trong “${currentProject.name}”.`
-                : "Trợ lý code chạy trên lvaigent. Mở một project để bắt đầu."}
+                ? tf("Đang làm việc trong “{name}”.", { name: currentProject.name })
+                : t("Trợ lý code chạy trên lvaigent. Mở một project để bắt đầu.")}
             </p>
             <div className="grid grid-cols-2 gap-2 max-w-md w-full">
               {suggestions.map((s) => (
@@ -359,7 +363,7 @@ export default function ChatView() {
                 className="mb-3 flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border bg-surface text-ui-sm text-foreground-subtle hover:text-foreground hover:bg-surface-hover transition-colors"
               >
                 <Diff size={13} className="text-brand" />
-                Xem thay đổi của agent
+                {t("Xem thay đổi của agent")}
                 <span className="text-ui-xs text-foreground-subtlest">(/review)</span>
               </button>
             )}
@@ -398,7 +402,7 @@ export default function ChatView() {
                   >
                     <KindIcon size={10} className="text-brand shrink-0" />
                     <span className="max-w-[180px] truncate">{f.name}</span>
-                    {f.truncated && <span className="text-ui-xs text-foreground-subtlest">(cắt)</span>}
+                    {f.truncated && <span className="text-ui-xs text-foreground-subtlest">({t("cắt")})</span>}
                     <button
                       onClick={() => detachFile(f.path)}
                       className="p-0.5 rounded hover:bg-destructive/15 hover:text-destructive transition-colors"
@@ -409,6 +413,26 @@ export default function ChatView() {
                 </HoverPreview>
                 );
               })}
+            </div>
+          )}
+
+          {isStreaming && (
+            <div className="flex justify-center mb-2 animate-fade-in">
+              <button
+                onClick={() => stopAgent()}
+                title={t("Dừng phản hồi")}
+                className="group flex items-center gap-2 px-3.5 h-8 rounded-full border border-border bg-surface hover:bg-surface-hover text-ui-sm font-medium text-foreground shadow-md transition-colors"
+              >
+                <span className="relative flex size-2 shrink-0">
+                  <span className="absolute inline-flex size-full rounded-full bg-brand opacity-60 animate-ping" />
+                  <span className="relative inline-flex size-2 rounded-full bg-brand" />
+                </span>
+                <span>{t("Agent đang chạy")}</span>
+                <span className="flex items-center gap-1 text-destructive">
+                  <Square size={10} fill="currentColor" />
+                  {t("Dừng")}
+                </span>
+              </button>
             </div>
           )}
 
@@ -463,7 +487,7 @@ export default function ChatView() {
                 setAtOpen(e.target.value.includes("@"));
               }}
               onKeyDown={handleKeyDown}
-              placeholder={currentProject ? "Hỏi về project này… (Shift+Enter xuống dòng)" : "Nhập câu hỏi… (Shift+Enter xuống dòng)"}
+              placeholder={currentProject ? t("Hỏi về project này… (Shift+Enter xuống dòng)") : t("Nhập câu hỏi… (Shift+Enter xuống dòng)")}
               className="w-full bg-transparent px-4 pt-3.5 pb-12 text-ui-base text-foreground placeholder-foreground-subtlest outline-none resize-none min-h-[52px] max-h-[220px]"
               rows={1}
             />
@@ -501,7 +525,7 @@ export default function ChatView() {
                           ))
                       ) : (
                         <div className="px-2 py-2.5 text-ui-sm text-foreground-subtlest">
-                          Chưa có model — mở Settings → Providers để lấy model.
+                          {t("Chưa có model — mở Settings → Providers để lấy model.")}
                         </div>
                       )}
                     </div>
@@ -519,7 +543,7 @@ export default function ChatView() {
                     onClick={() => setShowRunMenu(!showRunMenu)}
                     aria-haspopup="menu"
                     aria-expanded={showRunMenu}
-                    title="Chế độ chạy & quyền của agent"
+                    title={t("Chế độ chạy & quyền của agent")}
                     className={`flex items-center gap-1.5 h-7 px-2 rounded-md transition-colors text-ui-xs font-medium ${
                       showRunMenu || agentMode === "plan"
                         ? "bg-selected text-foreground"
@@ -548,9 +572,9 @@ export default function ChatView() {
                       className="menu-surface absolute bottom-full left-0 mb-2 w-72 flex flex-col gap-0.5 animate-scale-in z-50"
                     >
                       <div className="px-2 h-6 flex items-center gap-2 text-ui-xs font-semibold text-foreground-subtlest uppercase tracking-wider">
-                        Chế độ
+                        {t("Chế độ")}
                         <span className="ml-auto normal-case tracking-normal font-normal opacity-70">
-                          Tab để đổi nhanh
+                          {t("Tab để đổi nhanh")}
                         </span>
                       </div>
                       {(
@@ -559,13 +583,13 @@ export default function ChatView() {
                             id: "build" as const,
                             icon: HammerIcon,
                             label: "Build",
-                            desc: "Agent đọc và sửa file trong project.",
+                            desc: t("Agent đọc và sửa file trong project."),
                           },
                           {
                             id: "plan" as const,
                             icon: ClipboardList,
                             label: "Plan",
-                            desc: "Chỉ đọc và đề xuất kế hoạch, không sửa file.",
+                            desc: t("Chỉ đọc và đề xuất kế hoạch, không sửa file."),
                           },
                         ] as const
                       ).map((m) => {
@@ -619,7 +643,7 @@ export default function ChatView() {
                             Full access
                           </span>
                           <span className="block text-ui-xs text-foreground-subtlest">
-                            Cho agent chạy lệnh và sửa file không hỏi lại.
+                            {t("Cho agent chạy lệnh và sửa file không hỏi lại.")}
                           </span>
                         </span>
                         <span
@@ -641,7 +665,7 @@ export default function ChatView() {
                 <div className="relative">
                   <button
                     onClick={() => setShowAttachPicker(!showAttachPicker)}
-                    title="Đính kèm ảnh, tệp hoặc thư mục"
+                    title={t("Đính kèm ảnh, tệp hoặc thư mục")}
                     className={`flex items-center justify-center size-7 rounded-md transition-colors ${
                       showAttachPicker
                         ? "bg-selected text-foreground"
@@ -653,37 +677,37 @@ export default function ChatView() {
                   {showAttachPicker && (
                     <div className="menu-surface absolute bottom-full left-0 mb-2 w-72 max-h-[60vh] overflow-y-auto flex flex-col gap-0.5 animate-scale-in z-50">
                       <div className="px-2 h-6 flex items-center text-ui-xs font-semibold text-foreground-subtlest uppercase tracking-wider">
-                        Nhập từ máy
+                        {t("Nhập từ máy")}
                       </div>
                       <button
                         onClick={() => void importAttachment("image")}
                         className="menu-row"
-                        title="Chọn một hay nhiều ảnh"
+                        title={t("Chọn một hay nhiều ảnh")}
                       >
                         <ImagePlus className="size-3.5 shrink-0" />
-                        <span>Ảnh…</span>
+                        <span>{t("Ảnh…")}</span>
                       </button>
                       <button
                         onClick={() => void importAttachment("file")}
                         className="menu-row"
-                        title="Chọn một hay nhiều tệp văn bản/bất kỳ"
+                        title={t("Chọn một hay nhiều tệp văn bản/bất kỳ")}
                       >
                         <FileText className="size-3.5 shrink-0" />
-                        <span>Tệp…</span>
+                        <span>{t("Tệp…")}</span>
                       </button>
                       <button
                         onClick={() => void importAttachment("folder")}
                         className="menu-row"
-                        title="Chọn cả thư mục: cây tệp + nội dung các tệp văn bản"
+                        title={t("Chọn cả thư mục: cây tệp + nội dung các tệp văn bản")}
                       >
                         <FolderOpen className="size-3.5 shrink-0" />
-                        <span>Thư mục…</span>
+                        <span>{t("Thư mục…")}</span>
                       </button>
 
                       {currentProject && (
                         <>
                           <div className="mt-1 px-2 h-6 flex items-center text-ui-xs font-semibold text-foreground-subtlest uppercase tracking-wider truncate">
-                            Tệp trong {currentProject.name}
+                            {tf("Tệp trong {name}", { name: currentProject.name })}
                           </div>
                           {pickableFiles.map((f) => {
                             const attached = attachedPaths.has(f.path);
@@ -701,7 +725,7 @@ export default function ChatView() {
                           })}
                           {pickableFiles.length === 0 && (
                             <div className="px-2 py-3 text-center text-ui-sm text-foreground-subtlest">
-                              Không có file
+                              {t("Không có file")}
                             </div>
                           )}
                         </>
@@ -714,7 +738,7 @@ export default function ChatView() {
               {isStreaming ? (
                 <button
                   onClick={() => stopAgent()}
-                  title="Dừng phản hồi"
+                  title={t("Dừng phản hồi")}
                   className="flex items-center justify-center size-8 rounded-lg bg-destructive text-destructive-foreground hover:opacity-90 transition-colors"
                 >
                   <Square className="size-3.5" fill="currentColor" />
@@ -733,7 +757,7 @@ export default function ChatView() {
 
           <p className="flex items-center justify-center gap-1.5 text-ui-xs text-foreground-subtlest text-center mt-2.5">
             <User size={9} />
-            lvaigent — agent tự xác minh mọi thay đổi trước khi hoàn tất
+            {t("lvaigent — agent tự xác minh mọi thay đổi trước khi hoàn tất")}
           </p>
         </div>
       </div>

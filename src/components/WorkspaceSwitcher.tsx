@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Check, FolderOpen, Pin, Package } from "lucide-react";
 import { useStore, type WorkspaceEntry } from "../store";
+import { t, useLang } from "../lib/i18n";
 
 /** Deterministic avatar color (kept in sync with Sidebar). */
 const AVATAR_COLORS = [
@@ -24,6 +25,7 @@ interface WorkspaceSwitcherProps {
 
 /** TitleBar dropdown: quick switch between saved workspaces. */
 export default function WorkspaceSwitcher({ onManage }: WorkspaceSwitcherProps) {
+  useLang();
   const currentProject = useStore((s) => s.currentProject);
   const recentProjects = useStore((s) => s.recentProjects);
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
@@ -62,7 +64,7 @@ export default function WorkspaceSwitcher({ onManage }: WorkspaceSwitcherProps) 
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-ui-sm text-foreground-subtle hover:text-foreground hover:bg-surface-hover transition-colors max-w-[220px]"
-        title="Chuyển nhanh giữa các workspace"
+        title={t("Chuyển nhanh giữa các workspace")}
       >
         {currentProject ? (
           <>
@@ -87,7 +89,7 @@ export default function WorkspaceSwitcher({ onManage }: WorkspaceSwitcherProps) 
         <div className="menu-surface absolute top-full left-0 mt-1 w-64 flex flex-col gap-0.5 animate-scale-in z-[80]">
           {sorted.length === 0 ? (
             <div className="px-3 py-2.5 text-ui-xs text-foreground-subtlest">
-              Chưa có workspace nào — mở một project để bắt đầu.
+              {t("Chưa có workspace nào — mở một project để bắt đầu.")}
             </div>
           ) : (
             sorted.map((r) => {
@@ -124,7 +126,7 @@ export default function WorkspaceSwitcher({ onManage }: WorkspaceSwitcherProps) 
             className="menu-row"
           >
             <Package className="size-3.5 text-foreground-subtle" />
-            Quản lý workspace &amp; sessions…
+            {t("Quản lý workspace & sessions…")}
           </button>
           <button
             onClick={() => {
@@ -134,7 +136,7 @@ export default function WorkspaceSwitcher({ onManage }: WorkspaceSwitcherProps) 
             className="menu-row"
           >
             <FolderOpen className="size-3.5 text-foreground-subtlest" />
-            Thêm dự án…
+            {t("Thêm dự án…")}
           </button>
         </div>
       )}

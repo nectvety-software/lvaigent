@@ -90,15 +90,25 @@ function parseFrontmatter(raw: string): { description: string; template: string 
   return { description, template: raw.slice(m[0].length).trim() };
 }
 
-/** Fill $ARGUMENTS and $1..$9 placeholders with the typed args. */
-export function renderCommandTemplate(cmd: CustomCommand, args: string): string {
+/** Fill $ARGUMENTS and $1..$9 placeholders in a template body. */
+export function fillCommandTemplate(template: string, args: string): string {
   const parts = args.split(/\s+/).filter(Boolean);
-  let out = cmd.template;
+  let out = template;
+  // `${ARGUMENTS}` and `${ARGUMENTS:-fallback}` — the form plugin commands
+  // publish, where a bare `$ARGUMENTS` reads as shell noise.
+  out = out.replace(/\$\{ARGUMENTS(?::-([^}]*))?\}/g, (_m, fallback?: string) =>
+    args.trim() || (fallback ?? "")
+  );
   out = out.split("$ARGUMENTS").join(args.trim());
   parts.forEach((p, idx) => {
     if (idx < 9) out = out.split(`$${idx + 1}`).join(p);
   });
   return out;
+}
+
+/** Fill $ARGUMENTS and $1..$9 placeholders with the typed args. */
+export function renderCommandTemplate(cmd: CustomCommand, args: string): string {
+  return fillCommandTemplate(cmd.template, args);
 }
 
 /**

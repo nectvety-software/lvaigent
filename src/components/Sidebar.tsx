@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { useStore } from "../store";
 import type { WorkspaceEntry } from "../store";
+import { t, tf, useLang } from "../lib/i18n";
 
 interface Props {
   openPanel?: boolean;
@@ -91,6 +92,7 @@ export default function Sidebar({
   onOpenCommands,
   onOpenWorkspaces,
 }: Props) {
+  useLang();
   const {
     conversations,
     activeConversationId,
@@ -194,7 +196,7 @@ export default function Sidebar({
     setMenu(null);
     void (async () => {
       try {
-        const selected = await openDialog({ directory: true, multiple: false, title: "New Space — chọn thư mục gốc" });
+        const selected = await openDialog({ directory: true, multiple: false, title: t("New Space — chọn thư mục gốc") });
         if (!selected) return;
         const src = Array.isArray(selected) ? selected[0] : selected;
         const parent = src.replace(/[\\/]+$/, "").replace(/[/\\][^/\\]+$/, "");
@@ -252,7 +254,7 @@ export default function Sidebar({
           className="menu-row"
         >
           <ExternalLink className="size-3.5 text-foreground-subtlest" />
-          Mở vị trí thư mục dự án
+          {t("Mở vị trí thư mục dự án")}
         </button>
         <button
           onClick={() => copyPath(entry ? entry.path : currentProject!.path)}
@@ -263,7 +265,7 @@ export default function Sidebar({
           ) : (
             <Copy className="size-3.5 text-foreground-subtlest" />
           )}
-          {copied ? "Đã copy" : "Copy đường dẫn"}
+          {copied ? t("Đã copy") : t("Copy đường dẫn")}
         </button>
         {entry && (
           <>
@@ -280,7 +282,7 @@ export default function Sidebar({
               ) : (
                 <Pin className="size-3.5 text-foreground-subtlest" />
               )}
-              {entry.pinned ? "Bỏ ghim" : "Ghim lên đầu rail"}
+              {entry.pinned ? t("Bỏ ghim") : t("Ghim lên đầu rail")}
             </button>
             <button
               onClick={() => {
@@ -290,7 +292,7 @@ export default function Sidebar({
               className="menu-row hover:bg-destructive/15 hover:text-destructive"
             >
               <Trash2 className="size-3.5" />
-              Bỏ khỏi danh sách
+              {t("Bỏ khỏi danh sách")}
             </button>
           </>
         )}
@@ -359,7 +361,7 @@ export default function Sidebar({
                     outline: active ? "2px solid var(--color-brand)" : "none",
                     outlineOffset: "1px",
                   }}
-                  title={`${workspaceName(r)} — ${r.path}${r.pinned ? " (đã ghim)" : ""}`}
+                  title={`${workspaceName(r)} — ${r.path}${r.pinned ? ` ${t("(đã ghim)")}` : ""}`}
                 >
                   {avatarInitials(workspaceName(r))}
                   {active && (
@@ -375,7 +377,7 @@ export default function Sidebar({
             <button
               onClick={() => onOpenWorkspaces?.()}
               className={railButton}
-              title="Thêm dự án — quản lý workspace & sessions"
+              title={t("Thêm dự án — quản lý workspace & sessions")}
             >
               <Plus className="size-4" />
             </button>
@@ -385,7 +387,7 @@ export default function Sidebar({
         {/* Icon rail */}
         <div className="w-12 min-w-[48px] flex flex-col items-center py-1 gap-0.5">
           <div className="flex flex-col items-center gap-0.5 flex-1">
-            <button onClick={createConversation} className={railButton} title="Chat mới">
+            <button onClick={createConversation} className={railButton} title={t("Chat mới")}>
               <MessageSquare className="size-4" />
             </button>
           </div>
@@ -419,7 +421,7 @@ export default function Sidebar({
               className="flex items-center gap-2 w-full px-2 h-9 rounded-lg text-ui-base font-medium text-foreground hover:bg-surface-hover transition-colors"
             >
               <Plus className="size-4 text-foreground-subtle" />
-              <span className="truncate">Chat mới</span>
+              <span className="truncate">{t("Chat mới")}</span>
             </button>
 
             {!currentProject ? (
@@ -428,7 +430,7 @@ export default function Sidebar({
                 className="flex items-center gap-2 w-full px-2 h-9 rounded-lg text-ui-base text-foreground-subtle hover:bg-surface-hover hover:text-foreground transition-colors"
               >
                 <FolderOpen className="size-4" />
-                <span className="font-medium truncate">Mở project</span>
+                <span className="font-medium truncate">{t("Mở project")}</span>
               </button>
             ) : (
               <div
@@ -451,14 +453,14 @@ export default function Sidebar({
                   <div className="text-ui-xs text-foreground-subtlest truncate leading-tight">
                     <span className="font-mono hidden group-hover:inline">{currentProject.path}</span>
                     <span className="group-hover:hidden">
-                      {currentProject.fileCount ?? 0} files · {currentProject.dirCount ?? 0} thư mục
+                      {tf("{files} files · {dirs} thư mục", { files: currentProject.fileCount ?? 0, dirs: currentProject.dirCount ?? 0 })}
                     </span>
                   </div>
                 </div>
                 <button
                   onClick={closeProject}
                   className="flex items-center justify-center size-6 rounded-md text-foreground-subtlest hover:bg-destructive/15 hover:text-destructive transition-colors shrink-0"
-                  title="Đóng project"
+                  title={t("Đóng project")}
                 >
                   <X className="size-3.5" />
                 </button>
@@ -476,7 +478,7 @@ export default function Sidebar({
                   className="w-full flex items-center gap-1.5 px-2 h-7 text-ui-xs font-semibold text-foreground-subtlest uppercase tracking-wider hover:text-foreground-subtle transition-colors"
                 >
                   <FolderOpen className="size-3" />
-                  <span className="flex-1 text-left">Dự án gần đây</span>
+                  <span className="flex-1 text-left">{t("Dự án gần đây")}</span>
                   <ChevronDown
                     className={`size-3 transition-transform ${recentsOpen ? "" : "-rotate-90"}`}
                   />
@@ -538,7 +540,7 @@ export default function Sidebar({
             <section>
               <div className="flex items-center gap-1.5 px-2 h-7 text-ui-xs font-semibold text-foreground-subtlest uppercase tracking-wider">
                 <History className="size-3" />
-                <span className="flex-1 text-left">Lịch sử chat</span>
+                <span className="flex-1 text-left">{t("Lịch sử chat")}</span>
                 <span className="normal-case tracking-normal font-normal">
                   {filteredConversations.length}
                 </span>
@@ -550,32 +552,32 @@ export default function Sidebar({
                 onClick={() => setShowAllSessions((v) => !v)}
                 title={
                   showAllSessions
-                    ? "Đang hiện session của mọi workspace — bấm để chỉ hiện workspace đang chọn"
-                    : "Đang chỉ hiện session của workspace đang chọn — bấm để hiện tất cả"
+                    ? t("Đang hiện session của mọi workspace — bấm để chỉ hiện workspace đang chọn")
+                    : t("Đang chỉ hiện session của workspace đang chọn — bấm để hiện tất cả")
                 }
                 className="flex items-center gap-1.5 w-full px-2 h-7 mb-1 rounded-lg text-ui-xs text-foreground-subtle hover:bg-hover hover:text-foreground transition-colors"
               >
                 {showAllSessions ? (
                   <>
                     <Layers className="size-3 shrink-0 opacity-60" />
-                    <span className="truncate">Tất cả workspace</span>
+                    <span className="truncate">{t("Tất cả workspace")}</span>
                   </>
                 ) : (
                   <>
                     <FolderOpen className="size-3 shrink-0 opacity-60" />
                     <span className="truncate">
-                      {activeWorkspaceLabel ?? "Chưa có workspace"}
+                      {activeWorkspaceLabel ?? t("Chưa có workspace")}
                     </span>
                   </>
                 )}
                 <span className="ml-auto shrink-0 opacity-60">
-                  {showAllSessions ? "lọc" : "tất cả"}
+                  {showAllSessions ? t("lọc") : t("tất cả")}
                 </span>
               </button>
 
               <input
                 type="text"
-                placeholder="Tìm trong lịch sử…"
+                placeholder={t("Tìm trong lịch sử…")}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="input-field text-ui-sm mb-1.5"
@@ -584,12 +586,12 @@ export default function Sidebar({
                 {filteredConversations.length === 0 ? (
                   <p className="text-ui-sm text-foreground-subtlest px-2 py-3 text-center">
                     {searchQuery
-                      ? "Không tìm thấy hội thoại nào"
+                      ? t("Không tìm thấy hội thoại nào")
                       : showAllSessions
-                        ? "Chưa có hội thoại nào"
+                        ? t("Chưa có hội thoại nào")
                         : activeWorkspacePath
-                          ? "Workspace này chưa có session nào"
-                          : "Chưa có session nào ngoài workspace"}
+                          ? t("Workspace này chưa có session nào")
+                          : t("Chưa có session nào ngoài workspace")}
                   </p>
                 ) : (
                   filteredConversations.map((conv) => (

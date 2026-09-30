@@ -1,16 +1,18 @@
 import type { DiffLine } from "../lib/diff";
+import { tf, useLang } from "../lib/i18n";
 
 export type DiffRow = DiffLine | { type: "gap"; count: number };
 
 /** Render one diff row list (shared by the review panel and step badges). */
 export default function DiffRows({ rows }: { rows: DiffRow[] }) {
+  useLang();
   return (
     <div className="border-t border-border bg-terminal-bg font-mono text-ui-xs leading-[1.5] max-h-[50vh] overflow-auto">
       {rows.map((row, i) => {
         if (row.type === "gap") {
           return (
             <div key={i} className="px-3 py-0.5 text-foreground-subtlest bg-surface/60 select-none">
-              ⋯ {row.count} dòng không đổi
+              ⋯ {tf("{count} dòng không đổi", { count: row.count })}
             </div>
           );
         }

@@ -10,10 +10,13 @@ import {
   Plus,
   Trash2,
   Sparkles,
+  Boxes,
 } from "lucide-react";
 import { useStore } from "../store";
+import { t as tr, tf as trf, useLang } from "../lib/i18n";
 import Select from "./Select";
 import SkillsPromptSection, { ToggleRow } from "./SkillsPromptSection";
+import PluginsSection from "./PluginsSection";
 import { AGENT_PROFILES } from "../agents/profiles";
 import { API_PRESETS, makeProvider } from "../providers/presets";
 import AddProviderDialog from "./AddProviderDialog";
@@ -28,25 +31,26 @@ import {
 } from "../lib/bridge-watcher";
 
 function formatAge(ms: number): string {
-  if (ms < 10_000) return "vừa xong";
-  if (ms < 60_000) return `${Math.floor(ms / 1000)} giây`;
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)} phút`;
-  return `${Math.floor(ms / 3_600_000)} giờ`;
+  if (ms < 10_000) return tr("vừa xong");
+  if (ms < 60_000) return trf("{n} giây", { n: Math.floor(ms / 1000) });
+  if (ms < 3_600_000) return trf("{n} phút", { n: Math.floor(ms / 60_000) });
+  return trf("{n} giờ", { n: Math.floor(ms / 3_600_000) });
 }
 
 /** "... trước" — but "vừa xong" already reads as *just now*, so it stands alone. */
 function ago(ms: number): string {
   const a = formatAge(ms);
-  return a === "vừa xong" ? a : `${a} trước`;
+  return a === tr("vừa xong") ? a : trf("{age} trước", { age: a });
 }
 
 /** One dot + label + value line in the bridge status grid. */
 function StatusRow({ label, value, ok }: { label: string; value: string; ok: boolean }) {
+  useLang();
   return (
     <div className="flex items-center gap-1.5 min-w-0">
       <span
         className={`w-1.5 h-1.5 rounded-full shrink-0 ${ok ? "bg-success" : "bg-warning"}`}
-        title={ok ? "OK" : "chưa sẵn sàng"}
+        title={ok ? "OK" : tr("chưa sẵn sàng")}
       />
       <span className="text-foreground-subtlest shrink-0">{label}:</span>
       <span className="text-foreground-subtle truncate" title={value}>
@@ -61,6 +65,7 @@ const tabs = [
   { key: "models", label: "Models", icon: Settings2 },
   { key: "providers", label: "Providers", icon: Globe },
   { key: "skills", label: "Skills & Prompt", icon: Sparkles },
+  { key: "plugins", label: "Plugins", icon: Boxes },
 ] as const;
 
 type TabKey = (typeof tabs)[number]["key"];
@@ -70,6 +75,7 @@ interface Props {
 }
 
 export default function SettingsDialog({ onClose }: Props) {
+  useLang();
   const {
     settings,
     updateSettings,
@@ -93,7 +99,7 @@ export default function SettingsDialog({ onClose }: Props) {
   const handleTestConnection = async (p: (typeof providers)[number]) => {
     setFetchingId(p.id);
     setFetchError((m) => ({ ...m, [p.id]: "" }));
-    setTestResult((m) => ({ ...m, [p.id]: { ok: false, msg: "đang kiểm thử…" } }));
+    setTestResult((m) => ({ ...m, [p.id]: { ok: false, msg: tr("đang kiểm thử…") } }));
     const t0 = performance.now();
     try {
       let model = (p.models.find((m) => m.enabled) ?? p.models[0])?.id ?? "";
@@ -108,7 +114,7 @@ export default function SettingsDialog({ onClose }: Props) {
           });
         }
       }
-      if (!model) throw new Error("provider không có model nào để kiểm thử");
+      if (!model) throw new Error(tr("provider không có model nào để kiểm thử"));
       const reply = await pingProviderApi(p, model);
       const ms = Math.round(performance.now() - t0);
       updateProvider(p.id, { status: "connected" });
@@ -116,11 +122,11 @@ export default function SettingsDialog({ onClose }: Props) {
         ...m,
         [p.id]: { ok: true, msg: `OK · ${model} · ${ms}ms · "${reply.slice(0, 40)}"` },
       }));
-      addToast(`${p.name}: API kiểm thử đạt (${ms}ms)`, "success");
+      addToast(trf("{name}: API kiểm thử đạt ({ms}ms)", { name: p.name, ms }), "success");
     } catch (e) {
       updateProvider(p.id, { status: "error" });
       setTestResult((m) => ({ ...m, [p.id]: { ok: false, msg: String(e).slice(0, 220) } }));
-      addToast(`${p.name}: API kiểm thử lỗi`, "error");
+      addToast(trf("{name}: API kiểm thử lỗi", { name: p.name }), "error");
     } finally {
       setFetchingId(null);
     }
@@ -131,7 +137,7 @@ export default function SettingsDialog({ onClose }: Props) {
     setFetchError((m) => ({ ...m, [p.id]: "" }));
     try {
       const models = await fetchApiModels(p);
-      if (models.length === 0) throw new Error("danh sách model rỗng");
+      if (models.length === 0) throw new Error(tr("danh sách model rỗng"));
       updateProvider(p.id, {
         models: models.map((m) => ({ id: m.id, name: m.name, enabled: true })),
         status: "connected",
@@ -141,7 +147,7 @@ export default function SettingsDialog({ onClose }: Props) {
       if (s.selectedProvider === p.id && !models.some((m) => m.id === s.selectedModel)) {
         updateSettings({ selectedModel: models[0].id });
       }
-      addToast(`Đã lấy ${models.length} model từ ${p.name}`, "success");
+      addToast(trf("Đã lấy {n} model từ {name}", { n: models.length, name: p.name }), "success");
     } catch (e) {
       updateProvider(p.id, { status: "error" });
       setFetchError((m) => ({ ...m, [p.id]: String(e).slice(0, 200) }));
@@ -189,12 +195,12 @@ export default function SettingsDialog({ onClose }: Props) {
       setBridgeWStatus(getBridgeWatcherStatus());
       addToast(
         r.cookies && r.pow
-          ? "Đã quét lại từ Browser (cookie + PoW)"
+          ? tr("Đã quét lại từ Browser (cookie + PoW)")
           : r.cookies
-            ? "Đã nhận cookie lvaigent (PoW chưa xong — sẽ tự thử lại)"
+            ? tr("Đã nhận cookie lvaigent (PoW chưa xong — sẽ tự thử lại)")
             : r.pow
-              ? "Đã giải PoW mới (chưa lấy được cookie — Browser chưa sẵn sàng)"
-              : "Chưa quét được — Browser chưa sẵn sàng",
+              ? tr("Đã giải PoW mới (chưa lấy được cookie — Browser chưa sẵn sàng)")
+              : tr("Chưa quét được — Browser chưa sẵn sàng"),
         r.cookies || r.pow ? "success" : "error"
       );
     } finally {
@@ -271,16 +277,14 @@ export default function SettingsDialog({ onClose }: Props) {
               <h3 className="text-ui-base font-semibold text-foreground">General</h3>
 
               <div>
-                <label className="text-ui-sm font-medium text-foreground-subtle mb-1.5 block">Language</label>
+                <label className="text-ui-sm font-medium text-foreground-subtle mb-1.5 block">{tr("Ngôn ngữ")}</label>
                 <Select
-                  ariaLabel="Language"
+                  ariaLabel={tr("Ngôn ngữ")}
                   value={settings.language}
                   onChange={(v) => updateSettings({ language: v })}
                   options={[
-                    { value: "en", label: "English" },
                     { value: "vi", label: "Tiếng Việt" },
-                    { value: "ja", label: "日本語" },
-                    { value: "ko", label: "한국어" },
+                    { value: "en", label: "English" },
                   ]}
                 />
               </div>
@@ -324,7 +328,7 @@ export default function SettingsDialog({ onClose }: Props) {
                 />
                 <ToggleRow
                   title="Full access"
-                  desc="Cấp cho agent toàn quyền dùng mọi tool — kể cả ghi file và chạy lệnh — không hỏi lại. Các tool bị chặn ở mục 'Luật cấp quyền' bên dưới vẫn bị chặn."
+                  desc={tr("Cấp cho agent toàn quyền dùng mọi tool — kể cả ghi file và chạy lệnh — không hỏi lại. Các tool bị chặn ở mục 'Luật cấp quyền' bên dưới vẫn bị chặn.")}
                   value={settings.autoAcceptPermissions}
                   onChange={(v) => updateSettings({ autoAcceptPermissions: v })}
                   tone="warning"
@@ -333,9 +337,9 @@ export default function SettingsDialog({ onClose }: Props) {
 
               {/* Always-allow / always-deny rules (ZCode's addRules scopes). */}
               <div className="pt-4">
-                <h4 className="text-ui-sm font-medium text-foreground mb-1">Luật cấp quyền</h4>
+                <h4 className="text-ui-sm font-medium text-foreground mb-1">{tr("Luật cấp quyền")}</h4>
                 <p className="text-ui-xs text-foreground-subtlest mb-2">
-                  Rule đặt trong hộp thoại cấp quyền. "Luôn chặn" thắng "Full access".
+                  {tr("Rule đặt trong hộp thoại cấp quyền. \"Luôn chặn\" thắng \"Full access\".")}
                 </p>
                 <PermissionRules />
               </div>
@@ -344,6 +348,8 @@ export default function SettingsDialog({ onClose }: Props) {
 
           {/* SKILLS & PROMPT TAB */}
           {tab === "skills" && <SkillsPromptSection />}
+
+          {tab === "plugins" && <PluginsSection />}
 
           {/* MODELS TAB */}
           {tab === "models" && (
@@ -414,8 +420,7 @@ export default function SettingsDialog({ onClose }: Props) {
             <div className="space-y-4">
               <h3 className="text-ui-base font-semibold text-foreground">Providers</h3>
               <p className="text-ui-xs text-foreground-subtlest leading-relaxed">
-                Chọn provider dùng để chat. Provider API (OpenAI, Anthropic, OpenRouter, Groq,
-                Ollama...) gọi trực tiếp chuẩn REST — ổn định hơn bridge Duckai.
+                {tr("Chọn provider dùng để chat. Provider API (OpenAI, Anthropic, OpenRouter, Groq, Ollama...) gọi trực tiếp chuẩn REST — ổn định hơn bridge Duckai.")}
               </p>
 
               {/* Provider list */}
@@ -438,7 +443,7 @@ export default function SettingsDialog({ onClose }: Props) {
                           className={`w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors ${
                             isActive ? "border-brand" : "border-foreground-subtlest hover:border-foreground-subtle"
                           }`}
-                          title={isActive ? "Đang dùng" : "Dùng provider này"}
+                          title={isActive ? tr("Đang dùng") : tr("Dùng provider này")}
                         >
                           {isActive && <span className="w-2 h-2 rounded-full bg-primary" />}
                         </button>
@@ -450,14 +455,14 @@ export default function SettingsDialog({ onClose }: Props) {
                           </div>
                           <div className="text-ui-xs text-foreground-subtlest truncate">
                             {p.models.length} models ·{" "}
-                            {isDuck ? "bridge tích hợp trong app" : p.baseUrl}
+                            {isDuck ? tr("bridge tích hợp trong app") : p.baseUrl}
                           </div>
                         </div>
                         {!isDuck && (
                           <button
-                            onClick={() => { removeProvider(p.id); addToast("Đã xóa " + p.name, "info"); }}
+                            onClick={() => { removeProvider(p.id); addToast(trf("Đã xóa {name}", { name: p.name }), "info"); }}
                             className="p-1.5 rounded-lg hover:bg-destructive/15 text-foreground-subtlest hover:text-destructive transition-colors"
-                            title="Xóa provider"
+                            title={tr("Xóa provider")}
                           >
                             <Trash2 size={13} />
                           </button>
@@ -507,13 +512,13 @@ export default function SettingsDialog({ onClose }: Props) {
                               ) : (
                                 <RefreshCw size={12} />
                               )}
-                              Lấy models
+                              {tr("Lấy models")}
                             </button>
                             <button
                               onClick={() => handleTestConnection(p)}
                               disabled={fetchingId === p.id}
                               className="px-2.5 py-1.5 rounded-lg text-ui-xs font-medium border border-border text-foreground-subtle hover:text-foreground hover:border-brand/50 transition-colors disabled:opacity-50 whitespace-nowrap"
-                              title="Gửi một request chat thật qua API để kiểm tra key/model/protocol"
+                              title={tr("Gửi một request chat thật qua API để kiểm tra key/model/protocol")}
                             >
                               Test
                             </button>
@@ -550,7 +555,7 @@ export default function SettingsDialog({ onClose }: Props) {
                                   className={`w-3.5 h-3.5 rounded border shrink-0 flex items-center justify-center transition-colors ${
                                     m.enabled ? "bg-primary border-primary" : "border-foreground-subtlest"
                                   }`}
-                                  title={m.enabled ? "Đang bật" : "Đang tắt"}
+                                  title={m.enabled ? tr("Đang bật") : tr("Đang tắt")}
                                 >
                                   {m.enabled && <Check size={10} className="text-primary-foreground" />}
                                 </button>
@@ -565,7 +570,7 @@ export default function SettingsDialog({ onClose }: Props) {
                                     updateProvider(p.id, { models: p.models.filter((x) => x.id !== m.id) })
                                   }
                                   className="p-1 rounded hover:bg-destructive/15 text-foreground-subtlest hover:text-destructive transition-colors"
-                                  title="Xóa model"
+                                  title={tr("Xóa model")}
                                 >
                                   <Trash2 size={11} />
                                 </button>
@@ -575,7 +580,7 @@ export default function SettingsDialog({ onClose }: Props) {
                               <input
                                 value={modelDraft[p.id] ?? ""}
                                 onChange={(e) => setModelDraft((d) => ({ ...d, [p.id]: e.target.value }))}
-                                placeholder="Thêm model id thủ công (vd: gpt-4o-mini)"
+                                placeholder={tr("Thêm model id thủ công (vd: gpt-4o-mini)")}
                                 className="input-field font-mono text-ui-xs py-1 flex-1"
                                 onKeyDown={(e) => {
                                   if (e.key !== "Enter") return;
@@ -601,7 +606,7 @@ export default function SettingsDialog({ onClose }: Props) {
                                   setModelDraft((d) => ({ ...d, [p.id]: "" }));
                                 }}
                                 className="p-1.5 rounded-lg border border-border text-foreground-subtle hover:text-brand hover:border-brand/50 transition-colors disabled:opacity-40"
-                                title="Thêm model"
+                                title={tr("Thêm model")}
                               >
                                 <Plus size={12} />
                               </button>
@@ -611,7 +616,7 @@ export default function SettingsDialog({ onClose }: Props) {
                           {/* Custom headers */}
                           <details className="rounded-lg border border-border bg-surface p-2">
                             <summary className="text-ui-xs font-semibold text-foreground-subtle cursor-pointer select-none">
-                              Headers tùy chỉnh ({Object.keys(p.extraHeaders ?? {}).length})
+                              {tr("Headers tùy chỉnh")} ({Object.keys(p.extraHeaders ?? {}).length})
                             </summary>
                             <div className="space-y-1.5 pt-2">
                               {Object.entries(p.extraHeaders ?? {}).map(([k, v]) => (
@@ -638,7 +643,7 @@ export default function SettingsDialog({ onClose }: Props) {
                                       updateProvider(p.id, { extraHeaders: rec });
                                     }}
                                     className="p-1 rounded hover:bg-destructive/15 text-foreground-subtlest hover:text-destructive transition-colors"
-                                    title="Xóa header"
+                                    title={tr("Xóa header")}
                                   >
                                     <Trash2 size={11} />
                                   </button>
@@ -654,7 +659,7 @@ export default function SettingsDialog({ onClose }: Props) {
                                 <input
                                   value={headerDraft.value}
                                   onChange={(e) => setHeaderDraft((d) => ({ ...d, value: e.target.value }))}
-                                  placeholder="giá trị"
+                                  placeholder={tr("giá trị")}
                                   className="input-field font-mono text-ui-xs py-1 flex-1 min-w-0"
                                 />
                                 <button
@@ -668,7 +673,7 @@ export default function SettingsDialog({ onClose }: Props) {
                                     setHeaderDraft({ key: "", value: "" });
                                   }}
                                   className="p-1.5 rounded-lg border border-border text-foreground-subtle hover:text-brand hover:border-brand/50 transition-colors disabled:opacity-40"
-                                  title="Thêm header"
+                                  title={tr("Thêm header")}
                                 >
                                   <Plus size={12} />
                                 </button>
@@ -685,7 +690,7 @@ export default function SettingsDialog({ onClose }: Props) {
               {/* Add provider */}
               <div className="rounded-xl border border-border bg-background p-3 space-y-2.5">
                 <div className="text-ui-xs font-semibold text-foreground-subtle uppercase tracking-wider">
-                  Thêm provider
+                  {tr("Thêm provider")}
                 </div>
                 <div className="flex flex-wrap gap-1.5">
                   {API_PRESETS.map((preset) => {
@@ -696,7 +701,7 @@ export default function SettingsDialog({ onClose }: Props) {
                         disabled={exists}
                         onClick={() => {
                           addProvider(makeProvider(preset));
-                          addToast("Đã thêm " + preset.name, "success");
+                          addToast(trf("Đã thêm {name}", { name: preset.name }), "success");
                         }}
                         className="chip disabled:opacity-40 hover:border-brand/50 hover:text-brand transition-colors"
                       >
@@ -710,7 +715,7 @@ export default function SettingsDialog({ onClose }: Props) {
                   onClick={() => setAddDialogOpen(true)}
                   className="px-3 py-1.5 rounded-lg text-ui-sm font-medium bg-primary text-primary-foreground hover:brightness-110 transition-colors"
                 >
-                  Thêm provider tùy chỉnh…
+                  {tr("Thêm provider tùy chỉnh…")}
                 </button>
               </div>
 
@@ -720,7 +725,7 @@ export default function SettingsDialog({ onClose }: Props) {
                   onAdd={(p) => {
                     addProvider(p);
                     setAddDialogOpen(false);
-                    addToast("Đã thêm provider " + p.name, "success");
+                    addToast(trf("Đã thêm provider {name}", { name: p.name }), "success");
                   }}
                 />
               )}
@@ -729,7 +734,7 @@ export default function SettingsDialog({ onClose }: Props) {
               {settings.selectedProvider === "provider_duckai" && duckProvider && (
                 <details className="rounded-xl border border-border bg-background p-3">
                   <summary className="text-ui-xs font-semibold text-foreground-subtle cursor-pointer select-none">
-                    Duckai nâng cao (PoW, bridge, cookies — tự quét từ Browser)
+                    {tr("Duckai nâng cao (PoW, bridge, cookies — tự quét từ Browser)")}
                   </summary>
                   <div className="space-y-3 pt-3">
                     {/* Session panel: everything here is collected by the
@@ -740,8 +745,8 @@ export default function SettingsDialog({ onClose }: Props) {
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-ui-xs font-semibold text-foreground-subtle">
                             {bridgeWStatus.scanning
-                              ? "Đang quét Browser…"
-                              : "Tự quét từ Browser"}
+                              ? tr("Đang quét Browser…")
+                              : tr("Tự quét từ Browser")}
                           </span>
                           <button
                             onClick={handleRefreshSession}
@@ -749,7 +754,7 @@ export default function SettingsDialog({ onClose }: Props) {
                             className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-ui-xs font-medium bg-primary text-primary-foreground hover:brightness-110 disabled:opacity-50 transition-colors"
                           >
                             <RefreshCw size={11} className={refreshing ? "animate-spin" : ""} />
-                            {refreshing ? "Đang quét…" : "Quét lại ngay"}
+                            {refreshing ? tr("Đang quét…") : tr("Quét lại ngay")}
                           </button>
                         </div>
                         <div className="grid grid-cols-2 gap-x-3 gap-y-1 mt-2 text-ui-xs">
@@ -757,8 +762,8 @@ export default function SettingsDialog({ onClose }: Props) {
                             label="Bridge"
                             value={
                               bridgeWStatus.bridgeHealthy
-                                ? "sẵn sàng (CDP)"
-                                : bridgeWStatus.lastScanError ?? "đang chờ Browser"
+                                ? tr("sẵn sàng (CDP)")
+                                : bridgeWStatus.lastScanError ?? tr("đang chờ Browser")
                             }
                             ok={bridgeWStatus.bridgeHealthy}
                           />
@@ -769,7 +774,7 @@ export default function SettingsDialog({ onClose }: Props) {
                                 ? `${bridgeWStatus.cookieNames.length} cookie · ${ago(
                                     Date.now() - bridgeWStatus.cookieUpdatedAt
                                   )}`
-                                : "chưa nhận được"
+                                : tr("chưa nhận được")
                             }
                             ok={bridgeWStatus.cookieUpdatedAt != null}
                           />
@@ -778,15 +783,15 @@ export default function SettingsDialog({ onClose }: Props) {
                             value={
                               bridgeWStatus.powUpdatedAt
                                 ? `${ago(Date.now() - bridgeWStatus.powUpdatedAt)}`
-                                : "chưa giải"
+                                : tr("chưa giải")
                             }
                             ok={bridgeWStatus.powUpdatedAt != null}
                           />
                           <StatusRow
-                            label="Quét gần nhất"
+                            label={tr("Quét gần nhất")}
                             value={
                               bridgeWStatus.lastScanAt === 0
-                                ? "chưa quét"
+                                ? tr("chưa quét")
                                 : `${ago(Date.now() - bridgeWStatus.lastScanAt)}`
                             }
                             ok={bridgeWStatus.lastScanError == null}
@@ -795,14 +800,14 @@ export default function SettingsDialog({ onClose }: Props) {
                             label="Polling captcha"
                             value={
                               bridgeWStatus.lastPollAt === 0
-                                ? "chưa chạy"
+                                ? tr("chưa chạy")
                                 : `${ago(Date.now() - bridgeWStatus.lastPollAt)}`
                             }
                             ok={bridgeWStatus.lastPollOk}
                           />
                           <StatusRow
                             label="Watcher"
-                            value={bridgeWStatus.started ? "đang chạy" : "dừng"}
+                            value={bridgeWStatus.started ? tr("đang chạy") : tr("dừng")}
                             ok={bridgeWStatus.started}
                           />
                         </div>
@@ -810,12 +815,12 @@ export default function SettingsDialog({ onClose }: Props) {
                           <div className="mt-2 flex flex-wrap gap-1.5">
                             {bridgeWStatus.challengeUp && (
                               <span className="px-2 py-0.5 rounded-full text-ui-xs font-medium bg-warning/15 text-warning border border-warning/30">
-                                ⚠ Captcha đang hiển thị trên Browser
+                                {tr("⚠ Captcha đang hiển thị trên Browser")}
                               </span>
                             )}
                             {bridgeWStatus.willRetry && (
                               <span className="px-2 py-0.5 rounded-full text-ui-xs font-medium bg-interaction-ask-surface text-interaction-ask-foreground border border-interaction-ask-foreground/30">
-                                ↻ Sẽ tự gửi lại tin nhắn sau khi giải captcha
+                                {tr("↻ Sẽ tự gửi lại tin nhắn sau khi giải captcha")}
                               </span>
                             )}
                           </div>
@@ -828,7 +833,7 @@ export default function SettingsDialog({ onClose }: Props) {
                     {bridgeWStatus && bridgeWStatus.cookieNames.length > 0 && (
                       <div>
                         <label className="text-ui-xs text-foreground-subtlest mb-1 block">
-                          Cookie đã nhận từ Browser ({bridgeWStatus.cookieNames.length})
+                          {tr("Cookie đã nhận từ Browser")} ({bridgeWStatus.cookieNames.length})
                         </label>
                         <div className="flex flex-wrap gap-1">
                           {bridgeWStatus.cookieNames.map((n) => (
@@ -844,7 +849,7 @@ export default function SettingsDialog({ onClose }: Props) {
                     )}
                     {bridgeWStatus?.lastScanError && (
                       <p className="text-ui-xs text-warning">
-                        Lần quét gần nhất: {bridgeWStatus.lastScanError}
+                        {tr("Lần quét gần nhất:")} {bridgeWStatus.lastScanError}
                       </p>
                     )}
                   </div>

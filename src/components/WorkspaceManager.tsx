@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useStore, type WorkspaceEntry } from "../store";
 import type { Conversation } from "../types";
+import { t as tr, tf as trf, useLang } from "../lib/i18n";
 
 interface WorkspaceManagerProps {
   onClose: () => void;
@@ -36,6 +37,7 @@ function formatWhen(ts: number): string {
  * quick open) and all chat sessions grouped by their project.
  */
 export default function WorkspaceManager({ onClose }: WorkspaceManagerProps) {
+  useLang();
   const currentProject = useStore((s) => s.currentProject);
   const recentProjects = useStore((s) => s.recentProjects);
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
@@ -56,19 +58,19 @@ export default function WorkspaceManager({ onClose }: WorkspaceManagerProps) {
 
   const handleAddProject = async () => {
     try {
-      const selected = await openDialog({ directory: true, multiple: false, title: "Mở thư mục dự án" });
+      const selected = await openDialog({ directory: true, multiple: false, title: tr("Mở thư mục dự án") });
       if (!selected) return;
       const folderPath = Array.isArray(selected) ? selected[0] : selected;
       setActiveWorkspace(folderPath);
       onClose();
     } catch (e) {
-      addToast(`Không mở được project: ${e}`, "error");
+      addToast(trf("Không mở được project: {err}", { err: String(e) }), "error");
     }
   };
 
   const newSpace = async () => {
     try {
-      const selected = await openDialog({ directory: true, multiple: false, title: "New Space — chọn thư mục gốc" });
+      const selected = await openDialog({ directory: true, multiple: false, title: tr("New Space — chọn thư mục gốc") });
       if (!selected) return;
       const src = Array.isArray(selected) ? selected[0] : selected;
       const parent = src.replace(/[\\/]+$/, "").replace(/[/\\][^/\\]+$/, "");
@@ -128,8 +130,8 @@ export default function WorkspaceManager({ onClose }: WorkspaceManagerProps) {
         <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
           <div className="flex items-center gap-2">
             <Package size={15} className="text-brand" />
-            <span className="text-ui-base font-semibold text-foreground">Thêm dự án</span>
-            <span className="text-ui-xs text-foreground-subtlest">workspace &amp; sessions</span>
+            <span className="text-ui-base font-semibold text-foreground">{tr("Thêm dự án")}</span>
+            <span className="text-ui-xs text-foreground-subtlest">{tr("workspace & sessions")}</span>
           </div>
           <button
             onClick={onClose}
@@ -172,7 +174,7 @@ export default function WorkspaceManager({ onClose }: WorkspaceManagerProps) {
                   className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border border-border bg-surface hover:bg-surface-hover text-ui-base text-foreground transition-colors"
                 >
                   <Plus size={15} className="text-brand" />
-                  Mở thư mục dự án
+                  {tr("Mở thư mục dự án")}
                 </button>
                 <button
                   onClick={() => void newSpace()}
@@ -184,9 +186,9 @@ export default function WorkspaceManager({ onClose }: WorkspaceManagerProps) {
               </div>
               {recentProjects.length === 0 ? (
                 <div className="text-center text-ui-sm text-foreground-subtlest py-8">
-                  Chưa có dự án nào gần đây.
+                  {tr("Chưa có dự án nào gần đây.")}
                   <br />
-                  Mở một thư mục để bắt đầu làm việc.
+                  {tr("Mở một thư mục để bắt đầu làm việc.")}
                 </div>
               ) : (
                 recentProjects.map((r) => {
@@ -218,7 +220,7 @@ export default function WorkspaceManager({ onClose }: WorkspaceManagerProps) {
                             <div className="text-ui-base font-medium text-foreground truncate">
                               {workspaceName(r)}
                               {active && (
-                                <span className="ml-2 text-ui-xs text-brand font-normal">đang mở</span>
+                                <span className="ml-2 text-ui-xs text-brand font-normal">{tr("đang mở")}</span>
                               )}
                             </div>
                             <div className="text-ui-xs text-foreground-subtlest font-mono truncate">{r.path}</div>
@@ -235,7 +237,7 @@ export default function WorkspaceManager({ onClose }: WorkspaceManagerProps) {
                           <button
                             onClick={() => setActiveWorkspace(r.path)}
                             className="p-1.5 rounded-lg hover:bg-surface-hover text-foreground-subtlest hover:text-brand transition-colors opacity-0 group-hover:opacity-100"
-                            title="Mở workspace này"
+                            title={tr("Mở workspace này")}
                           >
                             <RefreshCw size={12} />
                           </button>
@@ -243,7 +245,7 @@ export default function WorkspaceManager({ onClose }: WorkspaceManagerProps) {
                         <button
                           onClick={() => void openFolder(r.path)}
                           className="p-1.5 rounded-lg hover:bg-surface-hover text-foreground-subtlest hover:text-foreground transition-colors opacity-0 group-hover:opacity-100"
-                          title="Mở vị trí thư mục"
+                          title={tr("Mở vị trí thư mục")}
                         >
                           <ExternalLink size={12} />
                         </button>
@@ -253,14 +255,14 @@ export default function WorkspaceManager({ onClose }: WorkspaceManagerProps) {
                             setRenameValue(workspaceName(r));
                           }}
                           className="p-1.5 rounded-lg hover:bg-surface-hover text-foreground-subtlest hover:text-foreground transition-colors opacity-0 group-hover:opacity-100"
-                          title="Đổi tên (Rename)"
+                          title={tr("Đổi tên (Rename)")}
                         >
                           <Pencil size={12} />
                         </button>
                         <button
                           onClick={() => forgetWorkspace(r.path)}
                           className="p-1.5 rounded-lg hover:bg-destructive/15 text-foreground-subtlest hover:text-destructive transition-colors opacity-0 group-hover:opacity-100"
-                          title="Bỏ khỏi danh sách"
+                          title={tr("Bỏ khỏi danh sách")}
                         >
                           <Trash2 size={12} />
                         </button>
@@ -274,7 +276,7 @@ export default function WorkspaceManager({ onClose }: WorkspaceManagerProps) {
             /* Sessions tab */
             sessionsByProject.length === 0 ? (
               <div className="text-center text-ui-sm text-foreground-subtlest py-8">
-                Chưa có session nào.
+                {tr("Chưa có session nào.")}
               </div>
             ) : (
               sessionsByProject.map(([projPath, sessions]) => (
@@ -282,14 +284,14 @@ export default function WorkspaceManager({ onClose }: WorkspaceManagerProps) {
                   <div className="flex items-center gap-1.5 px-1 pt-1 text-ui-xs font-semibold text-foreground-subtlest uppercase tracking-wider">
                     <FolderOpen size={10} />
                     <span className="truncate font-mono normal-case">
-                      {projPath || "(không gắn với project)"}
+                      {projPath || tr("(không gắn với project)")}
                     </span>
                     {!projPath && currentProject && (
                       <button
                         onClick={() => setActiveWorkspace(currentProject.path)}
                         className="normal-case text-brand hover:underline"
                       >
-                        mở project hiện tại
+                        {tr("mở project hiện tại")}
                       </button>
                     )}
                   </div>
@@ -311,14 +313,14 @@ export default function WorkspaceManager({ onClose }: WorkspaceManagerProps) {
                         >
                           <div className="text-ui-sm text-foreground truncate">{c.title}</div>
                           <div className="text-ui-xs text-foreground-subtlest">
-                            {c.messages.length} tin · {formatWhen(c.updatedAt)}
+                            {trf("{n} tin · {when}", { n: c.messages.length, when: formatWhen(c.updatedAt) })}
                             {c.model ? ` · ${c.model}` : ""}
                           </div>
                         </button>
                         <button
                           onClick={() => deleteConversation(c.id)}
                           className="p-1.5 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-destructive/15 text-foreground-subtlest hover:text-destructive transition-all"
-                          title="Xóa session"
+                          title={tr("Xóa session")}
                         >
                           <Trash2 size={12} />
                         </button>

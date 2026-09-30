@@ -1,3 +1,5 @@
+import type { InstalledPlugin } from "./lib/plugins";
+
 /** Agent mode, mirroring opencode: build edits files, plan is read-only. */
 export type AgentMode = "build" | "plan";
 
@@ -313,6 +315,16 @@ export interface AppSettings {
    * to override a tool the user explicitly blocked.
    */
   alwaysDenyTools?: string[];
+  /**
+   * Plugins installed from a ZCode-format marketplace (Settings → Plugins).
+   *
+   * Only the record is stored here: the skill/command text stays on disk under
+   * `<app data>/plugins/<name>` and is read back at boot, so localStorage does
+   * not carry several megabytes of third-party markdown.
+   */
+  installedPlugins?: InstalledPlugin[];
+  /** Plugin names the user turned OFF. Same "absent = enabled" contract. */
+  disabledPlugins?: string[];
 }
 
 export interface AgentProfile {
