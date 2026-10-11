@@ -46,13 +46,15 @@ import type { AppSettings, PromptSectionId, SkillId } from "../types";
  */
 const SHIPPED_PROMPT = `You are lvaigent, an AI coding assistant working inside the user's project.
 
-You have access to six tools. To use one, emit exactly one tool block on its
+You have access to eight tools. To use one, emit exactly one tool block on its
 own line, BEFORE writing your answer. Self-closing tools use this form:
 
   <tool name="list_files" />
   <tool name="glob" pattern="<glob like src/**/*.ts>" />
   <tool name="read_file" path="<path>" start_line="<optional 0-based line to continue from>" />
   <tool name="grep" query="<text to search>" />
+  <tool name="web_read" url="<https://...>" />
+  <tool name="web_search" query="<từ khóa>" count="<optional 1-10>" />
   <tool name="run_command" command="<shell command>" cwd="<optional subdir under project>" />
 
 These are lvaigent's own tools, executed by the lvaigent app on the user's
@@ -87,8 +89,11 @@ Rules:
    Write-Output/Echo with no argument — that throws and fails the whole line after
    the useful part already ran. If a command fails, read [command_hint] and fix the
    cause rather than re-running a variation of the same line.
-7. After you start writing the answer, do not emit further tool blocks.
-8. Tool blocks are stripped before the user sees your message — never explain
+7. web_read reads a URL as text (capped excerpt); web_search finds fresh
+   title+URL+snippet hits. Use them for anything outside the project instead of
+   guessing URLs or facts from memory.
+8. After you start writing the answer, do not emit further tool blocks.
+9. Tool blocks are stripped before the user sees your message — never explain
    them.
 
 Coding workflow (implement / fix / generate code):
@@ -127,7 +132,7 @@ describe("skills", () => {
   it("documents one tool line per enabled skill, and counts them", () => {
     const prompt = buildAgentSysPrompt(without(ALL_SKILL_IDS, "grep"));
     expect(prompt).not.toContain('name="grep"');
-    expect(prompt).toContain("You have access to five tools.");
+    expect(prompt).toContain("You have access to seven tools.");
     // The others survive untouched.
     expect(prompt).toContain('name="list_files"');
     expect(prompt).toContain('name="run_command"');
@@ -146,9 +151,9 @@ describe("skills", () => {
     const prompt = buildAgentSysPrompt(without(ALL_SKILL_IDS, "run_command"));
     expect(prompt).not.toContain("run_command runs from the project root");
     expect(prompt).not.toContain("Verify with run_command");
-    // 7 rules became 6, 5 workflow steps became 4 — with no gap in the numbering.
-    expect(prompt).toContain("6. Tool blocks are stripped");
-    expect(prompt).not.toContain("7. Tool blocks are stripped");
+    // 9 rules became 7, 5 workflow steps became 4 — with no gap in the numbering.
+    expect(prompt).toContain("7. Tool blocks are stripped");
+    expect(prompt).not.toContain("8. Tool blocks are stripped");
     expect(prompt).toContain("4. Finish with a short summary");
   });
 
@@ -166,7 +171,7 @@ describe("skills", () => {
     // A typo here would document a tool that silently falls through to
     // "unknown tool" at runtime.
     expect(SKILLS.map((s) => s.id)).toEqual([...ALL_SKILL_IDS]);
-    expect(SKILLS.filter((s) => s.syntax !== null)).toHaveLength(5);
+    expect(SKILLS.filter((s) => s.syntax !== null)).toHaveLength(7);
     expect(SKILLS.find((s) => s.id === "write_file")?.syntax).toBeNull();
   });
 });
@@ -566,6 +571,65 @@ describe("the file tools hand the backend a project-contained path", () => {
     expect(outcome.message).toContain("[tool_error]");
     expect(outcome.message).toContain("No project is open");
     expect(invokeMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("the internet tools reach the backend without a project", () => {
+  const withArgs = (name: string, args: Record<string, string>) => ({
+    name,
+    args,
+    raw: "",
+    index: 0,
+  });
+
+  it("web_read needs a url and never touches the backend without one", async () => {
+    const outcome = await executeTool(withArgs("web_read", {}), null);
+    expect(outcome.message).toContain("[tool_error]");
+    expect(outcome.message).toContain("url");
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("web_read forwards the url and labels the excerpt", async () => {
+    invokeMock.mockResolvedValue("hello ".repeat(100));
+    const outcome = await executeTool(
+      withArgs("web_read", { url: "https://example.com/a" }),
+      null
+    );
+    expect(invokeMock).toHaveBeenCalledWith("fetch_web", {
+      url: "https://example.com/a",
+      max_chars: null,
+    });
+    expect(outcome.message).toContain("Content of https://example.com/a");
+    expect(outcome.activity.summary).toContain("chars");
+  });
+
+  it("web_search needs a query and clamps count into 1-10", async () => {
+    const empty = await executeTool(withArgs("web_search", {}), null);
+    expect(empty.message).toContain("[tool_error]");
+    expect(invokeMock).not.toHaveBeenCalled();
+
+    invokeMock.mockResolvedValue([
+      { title: "T", url: "https://e.com", snippet: "S" },
+    ]);
+    const outcome = await executeTool(
+      withArgs("web_search", { query: "duck.ai", count: "99" }),
+      null
+    );
+    expect(invokeMock).toHaveBeenCalledWith("web_search", {
+      query: "duck.ai",
+      count: 10,
+    });
+    expect(outcome.message).toContain('Web results for "duck.ai"');
+    expect(outcome.message).toContain("https://e.com");
+  });
+
+  it("web_search says so plainly when nothing is found", async () => {
+    invokeMock.mockResolvedValue([]);
+    const outcome = await executeTool(
+      withArgs("web_search", { query: "no such thing anywhere" }),
+      null
+    );
+    expect(outcome.message).toContain("No web results");
   });
 });
 

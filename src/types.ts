@@ -345,6 +345,8 @@ export type SkillId =
   | "glob"
   | "read_file"
   | "grep"
+  | "web_read"
+  | "web_search"
   | "write_file"
   | "run_command";
 

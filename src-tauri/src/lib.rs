@@ -2103,6 +2103,84 @@ mod tests {
     }
 
     #[test]
+    fn web_url_guard_allows_pages_but_not_credentials_or_schemes() {
+        assert!(is_fetchable_http_url("https://example.com/a/b?q=1"));
+        assert!(is_fetchable_http_url("http://localhost:3000/docs"));
+        assert!(!is_fetchable_http_url("ftp://example.com/x"));
+        assert!(!is_fetchable_http_url("file:///etc/passwd"));
+        assert!(!is_fetchable_http_url("https://user:pass@example.com/"));
+        assert!(!is_fetchable_http_url("not a url"));
+        assert!(!is_fetchable_http_url(""));
+    }
+
+    #[test]
+    fn html_to_text_drops_head_content_and_keeps_blocks_readable() {
+        let html = r#"<!DOCTYPE html><html><head><title>T</title><style>.a{color:red}</style>
+            <script>var x = "<div>not text</div>";</script></head>
+            <body><!-- a comment --><h1>Hello &amp; welcome</h1>
+            <p>First&nbsp;para with <a href="https://e.com/?a=1&gt;2">a &lt;link&gt;</a>.</p>
+            <p>Second para&#33;</p></body></html>"#;
+        let text = html_to_text(html);
+        assert!(!text.contains("color:red"), "style leaked: {text}");
+        assert!(!text.contains("not text"), "script leaked: {text}");
+        assert!(!text.contains("a comment"), "comment leaked: {text}");
+        assert!(text.contains("Hello & welcome"), "entity not decoded: {text}");
+        assert!(text.contains("First para with a <link>."), "link text wrong: {text}");
+        assert!(text.contains("Second para!"), "numeric entity wrong: {text}");
+    }
+
+    #[test]
+    fn html_entities_decode_named_and_numeric_but_keep_unknown() {
+        assert_eq!(decode_html_entities("a &lt; b &amp; c"), "a < b & c");
+        assert_eq!(decode_html_entities("&#233; &#xE9;"), "é é");
+        assert_eq!(decode_html_entities("&notarealentity;"), "&notarealentity;");
+        // A `;` far away ends another sentence, not an entity.
+        assert_eq!(
+            decode_html_entities("fish & chips; tasty"),
+            "fish & chips; tasty"
+        );
+    }
+
+    #[test]
+    fn ddg_redirect_targets_unwrap_to_the_real_destination() {
+        assert_eq!(
+            extract_ddg_target("//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa%3Fb%3Dc&rut=abc"),
+            "https://example.com/a?b=c"
+        );
+        assert_eq!(
+            extract_ddg_target("https://direct.example/x"),
+            "https://direct.example/x"
+        );
+        assert_eq!(
+            extract_ddg_target("//example.com/proto-relative"),
+            "https://example.com/proto-relative"
+        );
+    }
+
+    #[test]
+    fn ddg_results_parse_titles_urls_and_snippets() {
+        let html = r#"<div class="result"><h2 class="result__title">
+            <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fone&rut=x">One &amp; Only</a></h2>
+            <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fone">first <b>hit</b> here</a></div>
+            <div class="result"><h2 class="result__title">
+            <a class="result__a" href="https://direct.example/two">Two</a></h2></div>"#;
+        let res = parse_ddg_results(html, 5);
+        assert_eq!(res.len(), 2);
+        assert_eq!(res[0].title, "One & Only");
+        assert_eq!(res[0].url, "https://example.com/one");
+        assert_eq!(res[0].snippet, "first hit here");
+        assert_eq!(res[1].url, "https://direct.example/two");
+        assert!(res[1].snippet.is_empty());
+    }
+
+    #[tokio::test]
+    async fn web_tools_reject_bad_input_without_touching_the_network() {
+        assert!(fetch_web("ftp://example.com/x".into(), None).await.is_err());
+        assert!(fetch_web("".into(), None).await.is_err());
+        assert!(web_search("   ".into(), None).await.is_err());
+    }
+
+    #[test]
     fn glob_match_cases() {
         assert!(glob_match("src/**/*.ts", "src/lib/a.ts"));
         assert!(glob_match("src/**/*.ts", "src/a.ts"));
@@ -2421,6 +2499,545 @@ async fn http_get_text(url: String, max_bytes: Option<usize>) -> Result<String, 
     String::from_utf8(bytes.to_vec()).map_err(|_| "response is not UTF-8 text".to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Internet capability (Agent-Reach integration, native port)
+//
+// Agent-Reach is a capability layer: it selects, installs, health-checks and
+// routes upstream internet tools (Jina Reader for web pages, Exa/MCP for
+// search, yt-dlp/gh/bili-cli/... per platform) rather than reading itself.
+// lvaigent ships a single Windows .exe with no Python sidecar, so the two
+// zero-config channels every agent needs — "read any URL" and "search the
+// whole web" — are ported here natively:
+//
+//   - fetch_web mirrors Agent-Reach's web channel (Jina Reader first, direct
+//     fetch + HTML-to-text fallback), so `web_read` works with no API key.
+//   - web_search mirrors its search channel over DuckDuckGo HTML (also keyless)
+//     instead of the Exa/MCP route, which needs Node + mcporter on the host.
+//
+// Authenticated/social channels (Twitter, Reddit, XHS, Facebook, Instagram,
+// Bilibili subtitles, LinkedIn, ...) stay on the Agent-Reach CLI + `run_command`
+// path: `agent-reach doctor` picks the backend, the agent calls it directly.
+// ---------------------------------------------------------------------------
+
+/// One web-search hit: title + URL + excerpt, as the model sees it.
+#[derive(Debug, Serialize, Clone)]
+struct WebSearchResult {
+    title: String,
+    url: String,
+    snippet: String,
+}
+
+/// True for URLs the internet tools may fetch: http(s), a host, no embedded
+/// credentials. Any host is allowed — this is a user-requested read, not a
+/// plugin install (contrast `is_trusted_plugin_url`'s allowlist).
+fn is_fetchable_http_url(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return false;
+    }
+    if parsed.username() != "" || parsed.password().is_some() {
+        return false;
+    }
+    parsed.host_str().is_some_and(|h| !h.is_empty())
+}
+
+fn ascii_lower(s: &str) -> String {
+    s.bytes()
+        .map(|b| (if b.is_ascii_uppercase() { b + 32 } else { b }) as char)
+        .collect()
+}
+
+/// Remove `<!-- ... -->` comments so commented-out markup never leaks as text.
+fn strip_html_comments(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(start) = rest.find("<!--") {
+        out.push_str(&rest[..start]);
+        match rest[start..].find("-->") {
+            Some(end) => rest = &rest[start + end + 3..],
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Remove whole `<tag ...>...</tag>` blocks (scripts, styles, ...).
+/// Case-insensitive on ASCII tag names; a missing close tag drops to the end.
+fn strip_tag_blocks(html: &str, tag: &str) -> String {
+    let lower = ascii_lower(html);
+    let open_pat = format!("<{tag}");
+    let close_pat = format!("</{tag}>");
+    let mut out = String::with_capacity(html.len());
+    let mut pos = 0;
+    while pos < html.len() {
+        let Some(rel) = lower[pos..].find(&open_pat) else {
+            out.push_str(&html[pos..]);
+            break;
+        };
+        let abs = pos + rel;
+        // `<tagsomething` is not `<tag`: the char after the name must end it.
+        let after = lower.as_bytes().get(abs + open_pat.len()).copied().unwrap_or(b'>');
+        if !matches!(after, b'>' | b'/' | b' ' | b'\t' | b'\n' | b'\r') {
+            out.push_str(&html[pos..abs + open_pat.len()]);
+            pos = abs + open_pat.len();
+            continue;
+        }
+        out.push_str(&html[pos..abs]);
+        match lower[abs..].find(&close_pat) {
+            Some(end) => pos = abs + end + close_pat.len(),
+            None => break,
+        }
+    }
+    out
+}
+
+/// Replace an opening tag (any attributes, any case) with `replacement`.
+/// Used for `<br ...>` line breaks before the generic tag stripper runs.
+fn replace_open_tag_with(html: &str, tag: &str, replacement: &str) -> String {
+    let lower = ascii_lower(html);
+    let pat = format!("<{tag}");
+    let mut out = String::with_capacity(html.len() + 16);
+    let mut pos = 0;
+    while pos < html.len() {
+        let Some(rel) = lower[pos..].find(&pat) else {
+            out.push_str(&html[pos..]);
+            break;
+        };
+        let abs = pos + rel;
+        let after = lower.as_bytes().get(abs + pat.len()).copied().unwrap_or(b'>');
+        if !matches!(after, b'>' | b'/' | b' ' | b'\t' | b'\n' | b'\r') {
+            out.push_str(&html[pos..abs + pat.len()]);
+            pos = abs + pat.len();
+            continue;
+        }
+        // The tag ends at the first `>` that is not inside quotes
+        // (`<div title="a>b">` is one tag, not two).
+        let bytes = html.as_bytes();
+        let mut i = abs;
+        let mut quote = None::<u8>;
+        while i < html.len() {
+            let b = bytes[i];
+            if let Some(q) = quote {
+                if b == q {
+                    quote = None;
+                }
+            } else if b == b'"' || b == b'\'' {
+                quote = Some(b);
+            } else if b == b'>' {
+                break;
+            }
+            i += 1;
+        }
+        out.push_str(&html[pos..abs]);
+        out.push_str(replacement);
+        pos = (i + 1).min(html.len());
+    }
+    out
+}
+
+/// Drop every remaining `<...>` tag (quote-aware, like above).
+fn strip_all_tags(html: &str) -> String {
+    let bytes = html.as_bytes();
+    let mut out = String::with_capacity(html.len());
+    let mut i = 0;
+    while i < html.len() {
+        let b = bytes[i];
+        if b == b'<' {
+            let mut j = i + 1;
+            let mut quote = None::<u8>;
+            while j < html.len() {
+                let c = bytes[j];
+                if let Some(q) = quote {
+                    if c == q {
+                        quote = None;
+                    }
+                } else if c == b'"' || c == b'\'' {
+                    quote = Some(c);
+                } else if c == b'>' {
+                    break;
+                }
+                j += 1;
+            }
+            i = (j + 1).min(html.len());
+        } else {
+            // Push the full char, not the byte: slicing mid-char panics.
+            let ch = html[i..].chars().next().unwrap_or('\u{FFFD}');
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    out
+}
+
+fn decode_numeric_entity(num: &str, hex: bool) -> Option<char> {
+    let n = if hex {
+        u32::from_str_radix(num, 16).ok()?
+    } else {
+        num.parse::<u32>().ok()?
+    };
+    if n == 0 {
+        return None;
+    }
+    char::from_u32(n)
+}
+
+/// Decode the entities HTML text actually contains. Named coverage is the
+/// handful pages emit; numeric (`&#233;`, `&#xE9;`) covers the rest. Unknown
+/// `&...;` sequences survive verbatim instead of being eaten.
+fn decode_html_entities(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let tail = &rest[amp..];
+        let Some(semi) = tail.find(';') else {
+            out.push_str(tail);
+            break;
+        };
+        // A "real" entity is short; a `;` 40 chars away ends another sentence.
+        if semi > 12 {
+            out.push('&');
+            rest = &rest[amp + 1..];
+            continue;
+        }
+        let entity = &tail[1..semi];
+        let decoded = if entity.eq_ignore_ascii_case("amp") {
+            Some('&')
+        } else if entity.eq_ignore_ascii_case("lt") {
+            Some('<')
+        } else if entity.eq_ignore_ascii_case("gt") {
+            Some('>')
+        } else if entity.eq_ignore_ascii_case("quot") {
+            Some('"')
+        } else if entity.eq_ignore_ascii_case("apos") || entity == "#39" {
+            Some('\'')
+        } else if entity.eq_ignore_ascii_case("nbsp") {
+            Some(' ')
+        } else if let Some(num) = entity.strip_prefix('#') {
+            let (hex, digits) = match num.strip_prefix('x').or_else(|| num.strip_prefix('X')) {
+                Some(h) => (true, h),
+                None => (false, num),
+            };
+            if !digits.is_empty()
+                && digits.len() <= 7
+                && digits
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (hex && b.is_ascii_hexdigit()))
+            {
+                decode_numeric_entity(digits, hex)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        match decoded {
+            Some(ch) => out.push(ch),
+            None => out.push_str(&tail[..=semi]),
+        }
+        rest = &tail[semi + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn collapse_spaces(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Heuristic: does this body look like HTML rather than plain text / JSON?
+fn looks_like_html(body: &str) -> bool {
+    let lower = ascii_lower(body.trim_start().get(..512).unwrap_or(body));
+    lower.starts_with('<')
+        || ["<html", "<body", "<div", "<article", "<main", "</p>", "</div>"].iter().any(|t| lower.contains(t))
+}
+
+/// Turn HTML into model-readable text: drop head content, break blocks into
+/// lines, strip tags, decode entities, collapse whitespace. Pure function, so
+/// the formatting is unit-testable without touching the network.
+fn html_to_text(html: &str) -> String {
+    let mut s = strip_html_comments(html);
+    for tag in ["script", "style", "noscript", "template"] {
+        s = strip_tag_blocks(&s, tag);
+    }
+    // Block closers/openers become line breaks BEFORE tags are stripped.
+    for tag in [
+        "p", "div", "li", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "article",
+        "section", "header", "footer", "blockquote", "pre", "hr",
+    ] {
+        s = replace_open_tag_with(&s, &format!("/{tag}"), "\n");
+        s = replace_open_tag_with(&s, tag, "\n");
+    }
+    s = replace_open_tag_with(&s, "br", "\n");
+    let stripped = strip_all_tags(&s);
+    let decoded = decode_html_entities(&stripped);
+    let mut out = String::new();
+    let mut blank = false;
+    for line in decoded.lines() {
+        let t = collapse_spaces(line);
+        let t = t.trim();
+        if t.is_empty() {
+            if !blank && !out.is_empty() {
+                out.push('\n');
+                blank = true;
+            }
+            continue;
+        }
+        // `out` never ends with a blank line here (see above), so one more
+        // newline separates paragraphs without stacking empties.
+        if !out.is_empty() && !blank {
+            out.push('\n');
+        }
+        out.push_str(t);
+        blank = false;
+    }
+    out
+}
+
+/// Cut `text` to `cap` characters on a char boundary, labelling the cut so
+/// the model cannot mistake the excerpt for the whole page.
+fn truncate_chars(text: &str, cap: usize) -> String {
+    if text.chars().count() <= cap {
+        return text.to_string();
+    }
+    let mut end = 0;
+    for (i, _) in text.char_indices() {
+        if text[..i].chars().count() >= cap {
+            break;
+        }
+        end = i;
+    }
+    // `end` is the start of the last kept char; extend past it.
+    let end = text[end..].chars().next().map(|c| end + c.len_utf8()).unwrap_or(end);
+    format!("{}\n... (truncated)", text[..end].trim_end())
+}
+
+/// Percent-encode a search query: unreserved marks survive, space becomes `+`.
+fn percent_encode_query(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(*b as char);
+        } else if *b == b' ' {
+            out.push('+');
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+fn percent_decode(s: &str) -> String {
+    let mut out = Vec::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                out.push(h * 16 + l);
+                i += 3;
+                continue;
+            }
+        }
+        // `+` only means space inside query strings — which is exactly where
+        // DuckDuckGo redirect targets carry their encoding.
+        out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// DuckDuckGo HTML wraps result links as `//duckduckgo.com/l/?uddg=<target>`.
+/// Unwrap to the real destination; pass direct links through untouched.
+fn extract_ddg_target(href: &str) -> String {
+    let Some(q) = href.find("uddg=") else {
+        if href.starts_with("//") {
+            return format!("https:{href}");
+        }
+        return href.to_string();
+    };
+    let enc = &href[q + 5..];
+    let end = enc.find('&').unwrap_or(enc.len());
+    percent_decode(&enc[..end])
+}
+
+fn extract_attr(tag: &str, name: &str) -> Option<String> {
+    let pat = format!("{name}=");
+    let mut search = tag;
+    let mut offset = 0;
+    loop {
+        let rel = ascii_lower(search).find(&pat)?;
+        let abs = offset + rel;
+        let after = tag[abs + pat.len()..].chars().next()?;
+        if after != '"' && after != '\'' {
+            search = &tag[abs + pat.len()..];
+            offset = abs + pat.len();
+            continue;
+        }
+        let quote = after;
+        let start = abs + pat.len() + 1;
+        let rest = &tag[start..];
+        let end = rest.find(quote)?;
+        return Some(rest[..end].to_string());
+    }
+}
+
+/// Parse DuckDuckGo HTML results (`result__a` title links + `result__snippet`
+/// excerpts). String scanning instead of an HTML parser crate: the one-file
+/// `.exe` gains no new dependency, and DDG's markup only needs three anchors.
+fn parse_ddg_results(html: &str, limit: usize) -> Vec<WebSearchResult> {
+    let mut out = Vec::new();
+    let mut pos = 0;
+    let mut guard = 0;
+    while out.len() < limit && guard < 400 {
+        guard += 1;
+        let Some(idx) = html[pos..].find("result__a") else {
+            break;
+        };
+        let abs = pos + idx;
+        let Some(tag_start) = html[..abs].rfind('<') else {
+            pos = abs + 10;
+            continue;
+        };
+        let Some(tag_rel) = html[abs..].find('>') else {
+            break;
+        };
+        let tag_end = abs + tag_rel;
+        let tag = &html[tag_start..=tag_end];
+        let href = extract_attr(tag, "href").unwrap_or_default();
+        let title_start = tag_end + 1;
+        let Some(title_rel) = html[title_start..].find("</a>") else {
+            pos = tag_end + 1;
+            continue;
+        };
+        let title_end = title_start + title_rel;
+        let title = collapse_spaces(&decode_html_entities(&strip_all_tags(&html[title_start..title_end])));
+        let title = title.trim().to_string();
+        pos = title_end + 4;
+        if title.is_empty() {
+            continue;
+        }
+        // The snippet anchor (if any) sits between this title and the next one.
+        let next_title = html[pos..].find("result__a").map(|r| pos + r).unwrap_or(html.len());
+        let mut snippet = String::new();
+        if let Some(s_idx) = html[pos..next_title].find("result__snippet") {
+            let s_abs = pos + s_idx;
+            if let Some(s_tag) = html[s_abs..].find('>') {
+                let s_start = s_abs + s_tag + 1;
+                if let Some(s_rel) = html[s_start..next_title].find("</a>") {
+                    let raw = &html[s_start..s_start + s_rel];
+                    snippet = collapse_spaces(&decode_html_entities(&strip_all_tags(raw)));
+                    snippet = snippet.trim().to_string();
+                }
+            }
+        }
+        let url = extract_ddg_target(&href);
+        if url.is_empty() {
+            continue;
+        }
+        out.push(WebSearchResult { title, url, snippet });
+    }
+    out
+}
+
+/// Read any web page as text (Agent-Reach `web` channel, native).
+///
+/// Tries Jina Reader first — free, keyless, already-clean text — then falls
+/// back to a direct fetch with HTML-to-text conversion.
+#[command]
+async fn fetch_web(url: String, max_chars: Option<usize>) -> Result<String, String> {
+    let target = url.trim().to_string();
+    if !is_fetchable_http_url(&target) {
+        return Err("URL must start with http:// or https://".into());
+    }
+    let cap = max_chars.unwrap_or(20_000).clamp(1_000, 60_000);
+    let client = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .redirect(reqwest::redirect::Policy::limited(4))
+        .timeout(std::time::Duration::from_secs(25))
+        .build()
+        .map_err(|e| e.to_string())?;
+    // 1. Jina Reader (Agent-Reach's default web backend).
+    let jina_url = format!("https://r.jina.ai/{target}");
+    if let Ok(resp) = client.get(&jina_url).send().await {
+        if resp.status().is_success() {
+            if let Ok(bytes) = resp.bytes().await {
+                if !bytes.is_empty() && bytes.len() <= 1_500_000 {
+                    let text = String::from_utf8_lossy(&bytes).trim().to_string();
+                    if !text.is_empty() {
+                        return Ok(truncate_chars(&text, cap));
+                    }
+                }
+            }
+        }
+    }
+    // 2. Direct fetch + HTML-to-text.
+    let resp = client
+        .get(&target)
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("HTTP {} for {target}", status.as_u16()));
+    }
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    if bytes.len() > 1_500_000 {
+        return Err(format!("response too large: {} bytes", bytes.len()));
+    }
+    let body = String::from_utf8_lossy(&bytes);
+    let text = if looks_like_html(&body) {
+        html_to_text(&body)
+    } else {
+        body.trim().to_string()
+    };
+    if text.is_empty() {
+        return Err("page contained no readable text".into());
+    }
+    Ok(truncate_chars(&text, cap))
+}
+
+/// Search the web without an API key (native stand-in for Agent-Reach's
+/// Exa/MCP search route, which needs Node + mcporter on the host).
+#[command]
+async fn web_search(query: String, count: Option<usize>) -> Result<Vec<WebSearchResult>, String> {
+    let q = query.trim();
+    if q.is_empty() {
+        return Err("query is empty".into());
+    }
+    let n = count.unwrap_or(5).clamp(1, 10);
+    let client = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .redirect(reqwest::redirect::Policy::limited(4))
+        .timeout(std::time::Duration::from_secs(25))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let url = format!("https://html.duckduckgo.com/html/?q={}", percent_encode_query(q));
+    let resp = client
+        .get(&url)
+        .header("Accept-Language", "en-US,en;q=0.9")
+        .send()
+        .await
+        .map_err(|e| format!("search request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("search HTTP {}", resp.status().as_u16()));
+    }
+    let html = resp.text().await.map_err(|e| e.to_string())?;
+    Ok(parse_ddg_results(&html, n))
+}
+
 /// Folder installed plugins live in: `<app data>/plugins`, created on demand.
 ///
 /// Deliberately outside any project: a plugin is a user-level capability, and
@@ -2507,6 +3124,8 @@ pub fn run() {
             place_duckai,
             open_in_explorer,
             http_get_text,
+            fetch_web,
+            web_search,
             plugins_dir,
             list_plugin_dirs,
             remove_plugin_dir,

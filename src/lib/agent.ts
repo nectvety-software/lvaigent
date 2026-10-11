@@ -193,6 +193,10 @@ const RULES: readonly PromptRule[] = [
     text: "The shell is PowerShell on Windows. One command per tool block: it is not a\n   terminal, so nothing is interactive and no prompt is shown. Never append a bare\n   Write-Output/Echo with no argument — that throws and fails the whole line after\n   the useful part already ran. If a command fails, read [command_hint] and fix the\n   cause rather than re-running a variation of the same line.",
   },
   {
+    requiresAny: ["web_read", "web_search"],
+    text: "web_read reads a URL as text (capped excerpt); web_search finds fresh\n   title+URL+snippet hits. Use them for anything outside the project instead of\n   guessing URLs or facts from memory.",
+  },
+  {
     text: "After you start writing the answer, do not emit further tool blocks.",
   },
   {
@@ -231,6 +235,8 @@ const NUMBER_WORDS: Record<number, string> = {
   4: "four",
   5: "five",
   6: "six",
+  7: "seven",
+  8: "eight",
 };
 
 function renderRules(rules: readonly PromptRule[], on: (r: Requirement) => boolean): string {
@@ -734,6 +740,52 @@ async function runTool(
         message: body
           ? `Matches for "${query}":\n${body}`
           : `No matches for "${query}".`,
+      };
+    }
+    case "web_read": {
+      const url = (t.args.url ?? "").trim();
+      if (!url) {
+        return {
+          activity: { tool: t.name, args: t.args, summary: "missing url" },
+          message: "[tool_error] web_read requires a url attribute",
+        };
+      }
+      const text = await invoke<string>("fetch_web", {
+        url,
+        max_chars: null,
+      });
+      const summary = `${text.length} chars`;
+      return {
+        activity: { tool: t.name, args: t.args, summary },
+        message: capToolMessage(`Content of ${url}:\n${text}`),
+      };
+    }
+    case "web_search": {
+      const query = (t.args.query ?? "").trim();
+      if (!query) {
+        return {
+          activity: { tool: t.name, args: t.args, summary: "missing query" },
+          message: "[tool_error] web_search requires a query attribute",
+        };
+      }
+      const parsed = Number.parseInt((t.args.count ?? "").trim(), 10);
+      const count = Number.isFinite(parsed) ? Math.min(10, Math.max(1, parsed)) : 5;
+      const hits = await invoke<{ title: string; url: string; snippet: string }[]>(
+        "web_search",
+        { query, count }
+      );
+      const summary = `${hits.length} results`;
+      const body = hits
+        .map(
+          (h, i) =>
+            `${i + 1}. ${h.title}\n   ${h.url}${h.snippet ? `\n   ${h.snippet}` : ""}`
+        )
+        .join("\n");
+      return {
+        activity: { tool: t.name, args: t.args, summary },
+        message: capToolMessage(
+          body ? `Web results for "${query}":\n${body}` : `No web results for "${query}".`
+        ),
       };
     }
     case "write_file": {

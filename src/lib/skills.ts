@@ -61,6 +61,20 @@ export const SKILLS: readonly SkillDef[] = [
     syntax: '  <tool name="grep" query="<text to search>" />',
   },
   {
+    id: "web_read",
+    name: "web_read",
+    description: "Đọc nội dung text của một URL (web, docs, bài viết).",
+    mutating: false,
+    syntax: '  <tool name="web_read" url="<https://...>" />',
+  },
+  {
+    id: "web_search",
+    name: "web_search",
+    description: "Tìm kiếm web toàn mạng (tiêu đề + URL + trích đoạn).",
+    mutating: false,
+    syntax: '  <tool name="web_search" query="<từ khóa>" count="<optional 1-10>" />',
+  },
+  {
     id: "write_file",
     name: "write_file",
     description: "Ghi/sửa file — thay thế toàn bộ nội dung file.",
