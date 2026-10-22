@@ -8,7 +8,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   },
 }));
 
-import { AGENT_SYS_PROMPT, buildAgentSysPrompt, executeTool } from "./agent";
+import { AGENT_SYS_PROMPT, buildAgentSysPrompt, executeTool, parseTodoList, resetReadFileState, todoListText } from "./agent";
 import {
   ALL_PROMPT_SECTION_IDS,
   ALL_SKILL_IDS,
@@ -46,7 +46,7 @@ import type { AppSettings, PromptSectionId, SkillId } from "../types";
  */
 const SHIPPED_PROMPT = `You are lvaigent, an AI coding assistant working inside the user's project.
 
-You have access to eight tools. To use one, emit exactly one tool block on its
+You have access to 11 tools. To use one, emit exactly one tool block on its
 own line, BEFORE writing your answer. Self-closing tools use this form:
 
   <tool name="list_files" />
@@ -55,6 +55,8 @@ own line, BEFORE writing your answer. Self-closing tools use this form:
   <tool name="grep" query="<text to search>" />
   <tool name="web_read" url="<https://...>" />
   <tool name="web_search" query="<từ khóa>" count="<optional 1-10>" />
+  <tool name="edit_file" path="<path>" old_string="<đoạn cần thay>" new_string="<đoạn thay vào>" replace_all="<optional true|false>" />
+  <tool name="ask_user" question="<câu hỏi>" options="<đáp án 1>,<đáp án 2>,<đáp án 3>" multi="<optional true|false>" />
   <tool name="run_command" command="<shell command>" cwd="<optional subdir under project>" />
 
 These are lvaigent's own tools, executed by the lvaigent app on the user's
@@ -73,27 +75,50 @@ indentation, no extra escaping) between <content> and </content>:
   </content>
   </tool>
 
+The todo tool carries the WHOLE list as a JSON array of
+{"content": "...", "status": "pending|in_progress|completed"} between <content>
+and </content>; mark exactly one item in_progress:
+
+  <tool name="todo">
+  <content>
+[{"content": "Đọc src/gfx.lua", "status": "in_progress"},
+ {"content": "Vẽ lại nền pop art", "status": "pending"},
+ {"content": "Chạy build kiểm tra", "status": "pending"}]
+  </content>
+  </tool>
+
 Rules:
 1. Read the relevant file(s) BEFORE answering or editing. Do NOT guess APIs.
-2. MAY emit several tool blocks in one turn when multiple files are needed.
-3. When tool results arrive, examine them and produce ONE final plain-text
+2. NEVER ask the user to paste, attach, drop or send file contents —
+   you have read_file/glob/grep for exactly that. Emit the tool block and
+   read the project yourself, every time.
+3. Prefer edit_file over write_file when changing PART of a file (it is
+   cheaper and cannot lose the rest). Read the file first — edit_file
+   refuses a path that was not read this session. old_string must match the
+   file EXACTLY (indentation, blank lines, punctuation) and be UNIQUE: on a
+   multi-match the edit is refused unless replace_all="true".
+4. ask_user is only for a decision that is genuinely the user's and that
+   you cannot resolve from the request, the code, or a sensible default. For
+   everything else, pick the obvious option, say so, and proceed.
+5. MAY emit several tool blocks in one turn when multiple files are needed.
+6. When tool results arrive, examine them and produce ONE final plain-text
    answer. Do not re-request an answered tool.
-4. All paths stay inside the project root. write_file REPLACES the whole
+7. All paths stay inside the project root. write_file REPLACES the whole
    file: read first (note the 1-based line numbers), then write the full new
    content. To move code, read all sides, then write all sides.
-5. run_command runs from the project root (120s timeout, non-interactive
+8. run_command runs from the project root (120s timeout, non-interactive
    stdin); prefer short commands, avoid long-running servers. It may ask the
    user for permission.
-6. The shell is PowerShell on Windows. One command per tool block: it is not a
+9. The shell is PowerShell on Windows. One command per tool block: it is not a
    terminal, so nothing is interactive and no prompt is shown. Never append a bare
    Write-Output/Echo with no argument — that throws and fails the whole line after
    the useful part already ran. If a command fails, read [command_hint] and fix the
    cause rather than re-running a variation of the same line.
-7. web_read reads a URL as text (capped excerpt); web_search finds fresh
+10. web_read reads a URL as text (capped excerpt); web_search finds fresh
    title+URL+snippet hits. Use them for anything outside the project instead of
    guessing URLs or facts from memory.
-8. After you start writing the answer, do not emit further tool blocks.
-9. Tool blocks are stripped before the user sees your message — never explain
+11. After you start writing the answer, do not emit further tool blocks.
+12. Tool blocks are stripped before the user sees your message — never explain
    them.
 
 Coding workflow (implement / fix / generate code):
@@ -102,11 +127,15 @@ Coding workflow (implement / fix / generate code):
    re-list the whole tree.
 2. Study what you will touch: glob for candidates, then read_file with line
    numbers. For large files continue with start_line.
-3. Implement with write_file (full exact content). Create new files freely
-   (parents are created); rewrite existing files completely.
-4. Verify with run_command using the Verify hints from [Codebase]
+3. Implement with edit_file when changing part of a file (read it first, keep
+   old_string unique and exact) and write_file when creating a file or
+   rewriting it wholesale.
+4. For work with three or more steps, emit a todo list first (ZCode's task
+   list): the first message may be the plan, then track it. Each todo call
+   REPLACES the whole list — resend it with updated statuses as you go.
+5. Verify with run_command using the Verify hints from [Codebase]
    (build / test / lint). On failure: read the error, fix, re-verify.
-5. Finish with a short summary: files changed, what each change does, and how
+6. Finish with a short summary: files changed, what each change does, and how
    it was verified.`;
 
 const without = <T,>(all: readonly T[], ...drop: T[]): T[] =>
@@ -132,7 +161,9 @@ describe("skills", () => {
   it("documents one tool line per enabled skill, and counts them", () => {
     const prompt = buildAgentSysPrompt(without(ALL_SKILL_IDS, "grep"));
     expect(prompt).not.toContain('name="grep"');
-    expect(prompt).toContain("You have access to seven tools.");
+    // 11 registered skills, minus grep. Past eight the builder stops spelling
+    // the number, which is the documented fallback.
+    expect(prompt).toContain("You have access to 10 tools.");
     // The others survive untouched.
     expect(prompt).toContain('name="list_files"');
     expect(prompt).toContain('name="run_command"');
@@ -151,10 +182,10 @@ describe("skills", () => {
     const prompt = buildAgentSysPrompt(without(ALL_SKILL_IDS, "run_command"));
     expect(prompt).not.toContain("run_command runs from the project root");
     expect(prompt).not.toContain("Verify with run_command");
-    // 9 rules became 7, 5 workflow steps became 4 — with no gap in the numbering.
-    expect(prompt).toContain("7. Tool blocks are stripped");
-    expect(prompt).not.toContain("8. Tool blocks are stripped");
-    expect(prompt).toContain("4. Finish with a short summary");
+    // 12 rules became 10, 6 workflow steps became 5 — with no gap in the numbering.
+    expect(prompt).toContain("10. Tool blocks are stripped");
+    expect(prompt).not.toContain("11. Tool blocks are stripped");
+    expect(prompt).toContain("5. Finish with a short summary");
   });
 
   it("says so plainly when no skill is enabled", () => {
@@ -171,8 +202,11 @@ describe("skills", () => {
     // A typo here would document a tool that silently falls through to
     // "unknown tool" at runtime.
     expect(SKILLS.map((s) => s.id)).toEqual([...ALL_SKILL_IDS]);
-    expect(SKILLS.filter((s) => s.syntax !== null)).toHaveLength(7);
+    // write_file and todo are documented as <content> blocks, the other nine
+    // as self-closing one-liners.
+    expect(SKILLS.filter((s) => s.syntax !== null)).toHaveLength(9);
     expect(SKILLS.find((s) => s.id === "write_file")?.syntax).toBeNull();
+    expect(SKILLS.find((s) => s.id === "todo")?.syntax).toBeNull();
   });
 });
 
@@ -394,8 +428,27 @@ describe("run_command tells the model what actually went wrong", () => {
     ]);
   });
 
-  it("says nothing extra when the command succeeded", async () => {
+  it("takes the command from the block body when the attribute cannot carry it", async () => {
+    // A command with both quote kinds has no attribute form — the parser
+    // ends at the first inner quote — so it travels in the body. Reading it
+    // from there is what keeps a python one-liner intact.
     invokeMock.mockResolvedValue({
+      exit_code: 0,
+      stdout: "ok",
+      stderr: "",
+      timed_out: false,
+    });
+    const outcome = await executeTool(
+      { name: "run_command", args: { content: `py -3 -c "print('hi')"` }, raw: "", index: 0 },
+      "D:/demo"
+    );
+
+    expect(outcome.message).not.toContain("[tool_error]");
+    const call = invokeMock.mock.calls.find((c) => c[0] === "run_command");
+    expect((call![1] as { command: string }).command).toBe(`py -3 -c "print('hi')"`);
+  });
+
+  it("says nothing extra when the command succeeded", async () => {    invokeMock.mockResolvedValue({
       exit_code: 0,
       stdout: "ok",
       stderr: "",
@@ -791,5 +844,264 @@ describe("importing images, files and folders into the composer", () => {
     expect(attachmentKindFor("D:/assets/icon.png")).toBe("image");
     expect(attachmentKindFor("D:/assets/ICON.JPG")).toBe("image");
     expect(attachmentKindFor("D:/game/main.lua")).toBe("file");
+  });
+});
+
+/**
+ * edit_file — ZCode's edit tool, ported.
+ *
+ * The contract that matters: an edit must follow a real read of the same file,
+ * and old_string must be unique unless replace_all is set. Both guards exist
+ * because the alternative (an old_string written from memory) silently edits
+ * the wrong place or nothing at all.
+ */
+describe("edit_file (ported from ZCode)", () => {
+  const edit = (args: Record<string, string>) => ({
+    name: "edit_file",
+    args,
+    raw: "",
+    index: 0,
+  });
+  const FILE = "line one\nline two\nline three\n";
+
+  /** A file read via the real tool path marks it editable. */
+  const readFirst = async () => {
+    invokeMock.mockResolvedValueOnce({
+      content: FILE,
+      total_lines: 3,
+      start_line: 0,
+      end_line: 3,
+      truncated: false,
+    });
+    await executeTool({ name: "read_file", args: { path: "a.lua" }, raw: "", index: 0 }, "D:\\proj");
+  };
+
+  it("refuses to edit a file that was not read this session", async () => {
+    invokeMock.mockResolvedValue(FILE);
+    const outcome = await executeTool(
+      edit({ path: "a.lua", old_string: "line two", new_string: "LINE TWO" }),
+      "D:\\proj",
+      { ask: async () => true }
+    );
+    expect(outcome.message).toContain("[tool_error]");
+    expect(outcome.message).toContain("has not been read");
+    expect(invokeMock).not.toHaveBeenCalledWith("write_file", expect.anything());
+  });
+
+  it("replaces the unique old_string and reports it", async () => {
+    await readFirst();
+    invokeMock.mockResolvedValueOnce(FILE); // read_file_content (executor)
+    invokeMock.mockResolvedValueOnce(21); // write_file
+    const outcome = await executeTool(
+      edit({ path: "a.lua", old_string: "line two", new_string: "LINE TWO" }),
+      "D:\\proj",
+      { ask: async () => true }
+    );
+    expect(outcome.message).toContain("[tool_result]");
+    expect(outcome.activity.summary).toContain("1 occurrence(s) replaced");
+  });
+
+  it("refuses an ambiguous match without replace_all", async () => {
+    await readFirst();
+    invokeMock.mockResolvedValue("x\nx\nx\n");
+    const outcome = await executeTool(
+      edit({ path: "a.lua", old_string: "x", new_string: "y" }),
+      "D:\\proj",
+      { ask: async () => true }
+    );
+    expect(outcome.message).toContain("ambiguous");
+    expect(outcome.message).toContain('replace_all="true"');
+    expect(invokeMock).not.toHaveBeenCalledWith("write_file", expect.anything());
+  });
+
+  it("replaces every occurrence with replace_all", async () => {
+    await readFirst();
+    invokeMock.mockResolvedValueOnce("x\nx\nx\n");
+    invokeMock.mockResolvedValueOnce(6);
+    const outcome = await executeTool(
+      edit({ path: "a.lua", old_string: "x", new_string: "y", replace_all: "true" }),
+      "D:\\proj",
+      { ask: async () => true }
+    );
+    expect(outcome.message).toContain("3 occurrences");
+    expect(invokeMock).toHaveBeenCalledWith("write_file", expect.anything());
+  });
+
+  it("reports an old_string that does not exist, with a file excerpt", async () => {
+    await readFirst();
+    invokeMock.mockResolvedValueOnce(FILE);
+    const outcome = await executeTool(
+      edit({ path: "a.lua", old_string: "line FOUR", new_string: "x" }),
+      "D:\\proj",
+      { ask: async () => true }
+    );
+    expect(outcome.message).toContain("was not found");
+    // The excerpt is what lets the model retry with the real text.
+    expect(outcome.message).toContain("line one");
+  });
+
+  it("creates the file when old_string is empty and the file is missing", async () => {
+    invokeMock.mockRejectedValueOnce(new Error("os error 2")); // read_file_content misses
+    invokeMock.mockResolvedValueOnce(5); // write_file
+    const outcome = await executeTool(
+      edit({ path: "new.lua", old_string: "", new_string: "hi\n" }),
+      "D:\\proj",
+      { ask: async () => true }
+    );
+    expect(outcome.message).toContain("Created new.lua");
+  });
+
+  it("refuses an empty old_string on an existing file — that is write_file's job", async () => {
+    await readFirst();
+    invokeMock.mockResolvedValueOnce(FILE);
+    const outcome = await executeTool(
+      edit({ path: "a.lua", old_string: "", new_string: "clobber\n" }),
+      "D:\\proj",
+      { ask: async () => true }
+    );
+    expect(outcome.message).toContain("[tool_error]");
+    expect(outcome.message).toContain("write_file");
+    expect(invokeMock).not.toHaveBeenCalledWith("write_file", expect.anything());
+  });
+
+  it("does not touch the filesystem when the user denies", async () => {
+    await readFirst();
+    invokeMock.mockResolvedValueOnce(FILE);
+    const outcome = await executeTool(
+      edit({ path: "a.lua", old_string: "line two", new_string: "x" }),
+      "D:\\proj",
+      { ask: async () => false }
+    );
+    expect(outcome.message).toContain("[tool_info]");
+    expect(invokeMock).not.toHaveBeenCalledWith("write_file", expect.anything());
+  });
+
+  it("is disabled in PLAN mode", async () => {
+    const outcome = await executeTool(
+      edit({ path: "a.lua", old_string: "x", new_string: "y" }),
+      "D:\\proj",
+      { readOnly: true }
+    );
+    expect(outcome.message).toContain("PLAN mode");
+  });
+});
+
+/**
+ * ask_user — ZCode's AskUserQuestion, ported.
+ *
+ * The answer must reach the model as a [tool_result]; a dismissed dialog is
+ * NOT a refusal and must not read as one.
+ */
+describe("ask_user (ported from ZCode)", () => {
+  const ask = (args: Record<string, string>) => ({ name: "ask_user", args, raw: "", index: 0 });
+
+  it("returns the user's answer as the tool result", async () => {
+    const outcome = await executeTool(
+      ask({
+        question: "Pop art hay pixel art?",
+        options: "pop art,pixel art",
+      }),
+      "D:\\proj",
+      { askQuestion: async () => "pop art" }
+    );
+    expect(outcome.message).toContain("[tool_result]");
+    expect(outcome.message).toContain("The user answered: pop art");
+    expect(outcome.activity.summary).toContain("pop art");
+  });
+
+  it("passes question, options and multiSelect through to the UI", async () => {
+    let seen: { question: string; options: string[]; multiSelect: boolean } | null = null;
+    await executeTool(
+      ask({ question: "Chọn màu", options: "đỏ,xanh | vàng", multi: "true" }),
+      "D:\\proj",
+      {
+        askQuestion: async (q) => {
+          seen = q;
+          return "đỏ, vàng";
+        },
+      }
+    );
+    expect(seen).toEqual({
+      question: "Chọn màu",
+      options: ["đỏ", "xanh", "vàng"],
+      multiSelect: true,
+    });
+  });
+
+  it("treats a dismissed dialog as no answer, not a refusal", async () => {
+    const outcome = await executeTool(
+      ask({ question: "Tiếp tục?", options: "có,không" }),
+      "D:\\proj",
+      { askQuestion: async () => null }
+    );
+    expect(outcome.message).toContain("did not answer");
+    expect(outcome.message).toContain("not treat this as a rejection");
+  });
+
+  it("errors clearly when the question attribute is missing", async () => {
+    const outcome = await executeTool(ask({ options: "a" }), "D:\\proj", {
+      askQuestion: async () => "a",
+    });
+    expect(outcome.message).toContain("[tool_error]");
+    expect(outcome.message).toContain("question attribute");
+  });
+
+  it("tells the model to decide itself when it cannot ask", async () => {
+    const outcome = await executeTool(ask({ question: "?", options: "a" }), "D:\\proj");
+    expect(outcome.message).toContain("not available in this run");
+  });
+});
+
+/**
+ * todo — ZCode's task list, ported.
+ *
+ * Each call carries the WHOLE list, so a malformed row must never blank the
+ * checklist the user is watching.
+ */
+describe("todo (ported from ZCode)", () => {
+  const todo = (content: string) => ({
+    name: "todo",
+    args: { content },
+    raw: "",
+    index: 0,
+  });
+
+  it("parses a well-formed list and counts statuses", () => {
+    const { items, error } = parseTodoList(
+      '[{"content":"Đọc file","status":"in_progress"},{"content":"Sửa","status":"completed"},{"content":"Test","status":"pending"}]'
+    );
+    expect(error).toBeNull();
+    expect(items).toEqual([
+      { content: "Đọc file", status: "in_progress" },
+      { content: "Sửa", status: "completed" },
+      { content: "Test", status: "pending" },
+    ]);
+    expect(todoListText(items)).toBe("[~] Đọc file\n[x] Sửa\n[ ] Test");
+  });
+
+  it("drops malformed rows instead of failing the whole list", () => {
+    const { items, error } = parseTodoList(
+      '[{"content":"Tốt","status":"pending"},{"content":"","status":"pending"},{"content":"Trạng thái lạ","status":"weird"}]'
+    );
+    expect(items).toHaveLength(1);
+    expect(error).toContain("2 malformed");
+  });
+
+  it("rejects bodies that are not a JSON array", () => {
+    expect(parseTodoList("{}").error).toContain("array");
+    expect(parseTodoList("not json").error).toContain("invalid JSON");
+    expect(parseTodoList("").error).toContain("empty");
+    expect(parseTodoList("[]").error).toContain("no valid rows");
+  });
+
+  it("runs through the executor with a step summary the UI shows", async () => {
+    const outcome = await executeTool(
+      todo('[{"content":"Đọc file","status":"in_progress"},{"content":"Xong","status":"completed"}]'),
+      "D:\\proj"
+    );
+    expect(outcome.message).toContain("[tool_result]");
+    expect(outcome.message).toContain("[x] Xong");
+    expect(outcome.activity.summary).toContain("1/2 xong");
+    expect(outcome.activity.summary).toContain("đang: Đọc file");
   });
 });

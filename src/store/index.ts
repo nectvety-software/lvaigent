@@ -18,6 +18,8 @@ import type {
   SkillId,
   ImportedSkill,
   ReviewFile,
+  PendingQuestion,
+  TodoItem,
 } from "../types";
 import {
   ensureVqdHash,
@@ -36,7 +38,7 @@ import {
   type MarketplaceEntry,  type PluginCommand,
   type PluginSkill,
 } from "../lib/plugins";
-import { streamApiChat, type ApiChatMessage } from "../lib/api-chat";
+import { fetchApiModels, streamApiChat, type ApiChatMessage } from "../lib/api-chat";
 import {
   AGENT_SYS_PROMPT,
   INIT_PROMPT,
@@ -48,6 +50,7 @@ import {
   clampToolFeedback,
   composeAgentRequest,
   looksLikeToolRefusal,
+  parseTodoList,
   parseToolCalls,
   spaContextBudget,
   stripToolBlocks,
@@ -588,6 +591,16 @@ interface AppState {
   /** Set the live status line on a streaming assistant message. */
   setMessageStatus: (conversationId: string, messageId: string, statusText: string | null) => void;
   setStreaming: (conversationId: string, messageId: string, isStreaming: boolean) => void;
+  /** Thumbs feedback on a finished reply; null clears it (same thumb toggles off). */
+  setMessageFeedback: (
+    conversationId: string,
+    messageId: string,
+    feedback: "up" | "down" | null
+  ) => void;
+  /** Replace the todo list shown on a message (each todo call is the whole list). */
+  setMessageTodos: (conversationId: string, messageId: string, todos: TodoItem[]) => void;
+  /** Delete one message from a conversation (the ⋯ menu's destructive action). */
+  removeMessage: (conversationId: string, messageId: string) => void;
 
   /** Terminal lines shown in the right panel; agent commands are mirrored here. */
   terminalLines: { id: string; kind: "cmd" | "out" | "err" | "info"; text: string }[];
@@ -607,6 +620,19 @@ interface AppState {
   requestApproval: (tool: string, args: Record<string, string>) => Promise<boolean>;
   /** Resolve a pending permission prompt shown in the UI. */
   answerApproval: (id: string, decision: ApprovalDecision) => void;
+  /**
+   * Question the agent asked mid-run (ZCode's AskUserQuestion), waiting for the
+   * user's answer. Resolves with the chosen answer — including free text from
+   * "Other" — or `null` when the dialog was dismissed.
+   */
+  pendingQuestion: PendingQuestion | null;
+  requestQuestion: (q: {
+    question: string;
+    options: string[];
+    multiSelect: boolean;
+  }) => Promise<string | null>;
+  /** Resolve a pending question prompt shown in the UI. */
+  answerQuestion: (id: string, answer: string | null) => void;
   /**
    * Turn Full access on or off. On = the agent runs tools without asking
    * (ZCode's `fullAccess` permission option, held persistently here).
@@ -660,6 +686,14 @@ interface AppState {
   /** Create (or replace) a provider from a preset/custom fields. */
   addProvider: (p: Provider) => void;
   removeProvider: (id: string) => void;
+  /**
+   * Refresh the free lane's model list from the gateway.
+   *
+   * The lane keeps no snapshot, so the roster is the gateway's own and is
+   * re-read on every boot. A failure is not worth a toast: the provider
+   * simply has no models yet, and Settings can retry.
+   */
+  refreshFreeModels: () => Promise<void>;
   /** The provider currently used for sending. */
   activeProvider: () => Provider;
 
@@ -737,6 +771,14 @@ interface AppState {
 
   settings: AppSettings;
   updateSettings: (updates: Partial<AppSettings>) => void;
+  /**
+   * Switch the active provider, and take its model with it.
+   *
+   * A model belongs to a provider: keeping a foreign one would send it to a
+   * gateway that does not serve it, and the turn would fail on a name the
+   * user never picked.
+   */
+  selectProvider: (providerId: string) => void;
 
   /** Agent mode applied to the NEXT prompt: build edits files, plan proposes. */
   agentMode: AgentMode;
@@ -813,6 +855,27 @@ const defaultProvider: Provider = {
   status: "unknown",
 };
 
+/**
+ * The keyless free model lane (OpenCode Zen gateway).
+ *
+ * No account, no API key, no local service: the gateway takes a pooled
+ * credential, so this provider works the moment it is selected. The list of
+ * models is the gateway's own and is refreshed at boot, because the lane keeps
+ * no snapshot — a model that disappears upstream must disappear here too.
+ */
+const freeProvider: Provider = {
+  id: "provider_free",
+  name: "Our Free Model",
+  baseUrl: "https://opencode.ai/inference/v1",
+  apiKey: "public",
+  apiFormat: "free",
+  models: [],
+  status: "unknown",
+};
+
+/** The providers the app owns; the user cannot remove them. */
+const BUILTIN_PROVIDER_IDS = [defaultProvider.id, freeProvider.id];
+
 const defaultSettings: AppSettings = {
   agentMode: "build",
   reviewSource: "git",
@@ -857,15 +920,15 @@ const initialSettings: AppSettings = loadSavedSettings();
 // The app defaults to Vietnamese; only an explicit "en" setting switches it.
 setLangSetting(initialSettings.language);
 
-/** Restore user-added providers; the duck.ai default is always present. */
+/** Restore user-added providers; the built-in ones are always present. */
 function loadProviders(): Provider[] {
   try {
     const raw = localStorage.getItem(PROVIDERS_STORE_KEY);
     const saved: Provider[] = raw ? (JSON.parse(raw) as Provider[]) : [];
-    const custom = saved.filter((p) => p && p.id !== defaultProvider.id);
-    return [defaultProvider, ...custom];
+    const custom = saved.filter((p) => p && !BUILTIN_PROVIDER_IDS.includes(p.id));
+    return [defaultProvider, freeProvider, ...custom];
   } catch {
-    return [defaultProvider];
+    return [defaultProvider, freeProvider];
   }
 }
 
@@ -873,7 +936,7 @@ function persistProviders(providers: Provider[]): void {
   try {
     localStorage.setItem(
       PROVIDERS_STORE_KEY,
-      JSON.stringify(providers.filter((p) => p.id !== defaultProvider.id))
+      JSON.stringify(providers.filter((p) => !BUILTIN_PROVIDER_IDS.includes(p.id)))
     );
   } catch {
     /* ignore */
@@ -1475,6 +1538,64 @@ export const useStore = create<AppState>((set, get) => ({
     return setResult;
   },
 
+  setMessageFeedback: (conversationId, messageId, feedback) =>
+    set((state) => {
+      const conversations = state.conversations.map((c) =>
+        c.id === conversationId
+          ? {
+              ...c,
+              messages: c.messages.map((m) =>
+                m.id === messageId
+                  ? // Same thumb again clears it, the other one replaces it.
+                    { ...m, feedback: m.feedback === feedback ? undefined : feedback ?? undefined }
+                  : m
+              ),
+            }
+          : c
+      );
+      persistConversations(conversations);
+      return { conversations };
+    }),
+
+  removeMessage: (conversationId, messageId) =>
+    set((state) => {
+      const conversations = state.conversations.map((c) =>
+        c.id === conversationId
+          ? {
+              ...c,
+              updatedAt: Date.now(),
+              messages: c.messages.filter((m) => m.id !== messageId),
+            }
+          : c
+      );
+      persistConversations(conversations);
+      // Drop this message's /undo target marker: the undo transaction it
+      // belonged to can no longer be reached from the UI once its bubble is
+      // gone, so the target dot would point at nothing.
+      for (const [txId, target] of messageTargets) {
+        if (target.messageId === messageId) messageTargets.delete(txId);
+      }
+      return { conversations };
+    }),
+
+  setMessageTodos: (conversationId, messageId, todos) =>
+    set((state) => ({
+      conversations: state.conversations.map((c) =>
+        c.id === conversationId
+          ? {
+              ...c,
+              messages: c.messages.map((m) =>
+                m.id === messageId
+                  ? // An empty list clears the checklist instead of hiding it,
+                    // so "no todos" is a visible state the model can produce.
+                    { ...m, todos: todos.length > 0 ? todos : undefined }
+                  : m
+              ),
+            }
+          : c
+      ),
+    })),
+
   pendingApproval: null,
   requestApproval: async (tool, args) => {
     const s = get().settings;
@@ -1507,6 +1628,25 @@ export const useStore = create<AppState>((set, get) => ({
     if (decision === "allowAlways") get().addAlwaysRule(p.tool, "allow");
     if (decision === "rejectAlways") get().addAlwaysRule(p.tool, "deny");
     p.resolve(decision !== "rejectOnce" && decision !== "rejectAlways");
+  },
+  pendingQuestion: null,
+  requestQuestion: ({ question, options, multiSelect }) =>
+    new Promise<string | null>((resolve) => {
+      // Full access means "never ask", and an unanswered question is not a
+      // refusal: resolve null so the model proceeds on its own judgment,
+      // exactly like a dismissed dialog in ZCode.
+      if (get().settings.autoAcceptPermissions) {
+        resolve(null);
+        return;
+      }
+      const id = generateId();
+      set({ pendingQuestion: { id, question, options, multiSelect, resolve } });
+    }),
+  answerQuestion: (id, answer) => {
+    const q = get().pendingQuestion;
+    if (!q || q.id !== id) return;
+    set({ pendingQuestion: null });
+    q.resolve(answer);
   },
   setFullAccess: (on) => get().updateSettings({ autoAcceptPermissions: on }),
   /**
@@ -1782,7 +1922,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   removeProvider: (id) =>
     set((state) => {
-      if (id === defaultProvider.id) return {};
+      if (BUILTIN_PROVIDER_IDS.includes(id)) return {};
       const providers = state.providers.filter((p) => p.id !== id);
       persistProviders(providers);
       return {
@@ -1801,6 +1941,43 @@ export const useStore = create<AppState>((set, get) => ({
       state.providers[0] ??
       defaultProvider
     );
+  },
+
+  refreshFreeModels: async () => {
+    try {
+      const models = await fetchApiModels(freeProvider);
+      set((state) => {
+        const providers = state.providers.map((p) =>
+          p.id === freeProvider.id
+            ? {
+                ...p,
+                models: models.map((m) => ({ id: m.id, name: m.name, enabled: true })),
+                status: "connected" as const,
+              }
+            : p
+        );
+        // The lane's roster arrives after the app boots, so the model the
+        // user had (from another provider) is foreign to it: take the first
+        // model of the lane instead of sending a name it does not serve.
+        const settings = { ...state.settings };
+        if (
+          settings.selectedProvider === freeProvider.id &&
+          models.length > 0 &&
+          !models.some((m) => m.id === settings.selectedModel)
+        ) {
+          settings.selectedModel = models[0].id;
+        }
+        return { providers, settings };
+      });
+    } catch {
+      // The gateway may be unreachable from this network; the provider stays
+      // empty and Settings can retry. Not worth interrupting the user.
+      set((state) => ({
+        providers: state.providers.map((p) =>
+          p.id === freeProvider.id ? { ...p, status: "error" as const } : p
+        ),
+      }));
+    }
   },
 
   currentProject: null,
@@ -2083,6 +2260,25 @@ export const useStore = create<AppState>((set, get) => ({
         /* ignore quota errors */
       }
       if (updates.language !== undefined) setLangSetting(next.language);
+      return { settings: next };
+    }),
+
+  selectProvider: (providerId) =>
+    set((state) => {
+      const provider = state.providers.find((p) => p.id === providerId);
+      const next = { ...state.settings, selectedProvider: providerId };
+      if (
+        provider &&
+        provider.models.length > 0 &&
+        !provider.models.some((m) => m.id === next.selectedModel)
+      ) {
+        next.selectedModel = provider.models[0].id;
+      }
+      try {
+        localStorage.setItem(SETTINGS_STORE_KEY, JSON.stringify(next));
+      } catch {
+        /* ignore quota errors */
+      }
       return { settings: next };
     }),
 
@@ -2753,6 +2949,9 @@ export const useStore = create<AppState>((set, get) => ({
           full = await streamApiChat(provider, {
             model: get().settings.selectedModel,
             messages: apiMessages,
+            // The free lane accounts its quota per session, so one
+            // conversation must keep one upstream session for its whole life.
+            session: conversationId,
             onProgress: (partial) => {
               stopTicker();
               get().updateMessage(conversationId, assistantId, stripToolBlocks(partial));
@@ -2868,10 +3067,15 @@ export const useStore = create<AppState>((set, get) => ({
             get().appendTerminal("cmd", t.args.command);
           }
           // Snapshot the target file before a write so /undo can restore it
-          // and the review panel can diff it.
+          // and the review panel can diff it. edit_file writes too, so it is
+          // snapshotted exactly like write_file.
           let prevContent: string | null = null;
           let existed = false;
-          if (t.name === "write_file" && t.args.path && projectRoot) {
+          if (
+            (t.name === "write_file" || t.name === "edit_file") &&
+            t.args.path &&
+            projectRoot
+          ) {
             const rel = t.args.path.replace(/^[\\/]+/, "");
             const abs = resolveProjectPath(rel, projectRoot);
             try {
@@ -2890,6 +3094,7 @@ export const useStore = create<AppState>((set, get) => ({
           try {
             res = await executeTool(t, projectRoot, {
               ask: (req) => get().requestApproval(req.name, req.args),
+              askQuestion: (q) => get().requestQuestion(q),
               shell: get().settings.terminalShell,
               readOnly: mode === "plan",
               disabledSkills: (get().settings.disabledSkills ?? []) as SkillId[],
@@ -2930,21 +3135,33 @@ export const useStore = create<AppState>((set, get) => ({
             get().appendTerminal("info", `${t.args.command} → ${res.activity.summary}`);
           }
           outcomes.push(res);
+          // The todo list the model just sent is shown on the bubble; each
+          // call is the whole list, so an empty/errored one clears it.
+          if (t.name === "todo") {
+            const { items } = parseTodoList(t.args.content ?? "");
+            get().setMessageTodos(conversationId, assistantId, items);
+          }
           // The codebase map goes stale after writes; refresh it once per send.
-          if (t.name === "write_file" && res.activity.summary.includes("bytes written")) {
+          if (
+            (t.name === "write_file" || t.name === "edit_file") &&
+            res.activity.summary.includes("bytes written")
+          ) {
             filesTouched = true;
             if (projectRoot) {
               const rel = (t.args.path ?? "").replace(/^[\\/]+/, "");
-              recordWrite(
-                undoTx,
-                resolveProjectPath(rel, projectRoot),
-                rel,
-                t.args.content ?? "",
-                existed,
-                prevContent
-              );
+              const abs = resolveProjectPath(rel, projectRoot);
+              // write_file's new content is right there in the tool call;
+              // edit_file's is not, so read back what the executor just wrote.
+              // Both paths then share one undo/diff implementation.
+              const newContent =
+                t.name === "write_file"
+                  ? (t.args.content ?? "")
+                  : await invoke<string>("read_file_content", { path: abs }).catch(
+                      () => t.args.new_string ?? ""
+                    );
+              recordWrite(undoTx, abs, rel, newContent, existed, prevContent);
               txCommitted = true;
-              const d = diffLines(prevContent ?? "", t.args.content ?? "");
+              const d = diffLines(prevContent ?? "", newContent);
               pushStep({
                 id: stepId,
                 tool: t.name,

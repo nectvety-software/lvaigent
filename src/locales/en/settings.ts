@@ -58,6 +58,8 @@ const en: Record<string, string> = {
   "Đang dùng": "In use",
   "Dùng provider này": "Use this provider",
   "bridge tích hợp trong app": "built-in app bridge",
+  "miễn phí — không cần API key, không cần đăng nhập":
+    "free — no API key, no sign-up",
   "Đã xóa {name}": "Deleted {name}",
   "Xóa provider": "Delete provider",
   "Lấy models": "Fetch models",

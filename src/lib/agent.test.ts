@@ -191,6 +191,21 @@ describe("looksLikeToolRefusal", () => {
     expect(looksLikeToolRefusal("Mình không cần grep cũng trả lời được.")).toBe(false);
   });
 
+  it("catches the 'paste the files yourself' refusal that names files with extensions", () => {
+    // Verbatim from the reported run ("cải thiện giao diện đồ họa" on a GB Studio
+    // project): the model named src/gfx.lua and src/ui.lua and asked the user to
+    // paste them. The dot inside the extension used to split the clause right in
+    // half — noun ("nội dung") on one side, negation ("không") on the other — so
+    // the detector returned false, no corrective turn was sent, and the prose was
+    // shown as the final answer. The agent never generated any code.
+    const text =
+      "Mình vẫn cần nội dung `src/gfx.lua` và `src/ui.lua` để chỉnh giao diện mà không đoán cấu trúc hay API của dự án. Dán hai file vào đấy, mình sẽ làm bản sửa cụ thể.";
+    expect(looksLikeToolRefusal(text)).toBe(true);
+    expect(
+      looksLikeToolRefusal("Không có nội dung src/ui.lua trong ngữ cảnh của phiên này.")
+    ).toBe(true);
+  });
+
   it("stays quiet on an ordinary answer that happens to mention a tool", () => {
     expect(looksLikeToolRefusal("Không có gì cần sửa, mọi thứ đã ổn.")).toBe(false);
     expect(looksLikeToolRefusal("Hàm này dùng read_file để đọc file.")).toBe(false);

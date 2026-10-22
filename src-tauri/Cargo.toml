@@ -1,6 +1,6 @@
 [package]
 name = "lvaigent"
-version = "0.1.0"
+version = "0.3.0"
 description = "lvaigent - AI Chat with Duck.ai models"
 authors = ["you"]
 edition = "2021"
@@ -23,6 +23,9 @@ tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The free model lane derives its session id from a digest of the conversation
+# seed, so the same conversation keeps one upstream session without any state.
+sha2 = "0.10"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"

@@ -3,6 +3,8 @@ use tauri::command;
 use tauri::ipc::Channel;
 use tauri::Manager;
 
+mod free_model;
+
 // The hidden duck.ai bridge window is exposed over the Chrome DevTools
 // Protocol on this loopback port. The frontend drives the REAL SPA through
 // it (minting genuine journey/signals/vqd tokens that duck.ai's bot
@@ -3150,6 +3152,8 @@ pub fn run() {
             read_file_lines,
             glob_files,
             project_overview,
+            free_model::free_model_chat,
+            free_model::free_model_models,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

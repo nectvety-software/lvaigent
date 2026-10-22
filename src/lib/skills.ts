@@ -82,6 +82,32 @@ export const SKILLS: readonly SkillDef[] = [
     syntax: null, // documented as a <content> block, see agent.ts
   },
   {
+    id: "edit_file",
+    name: "edit_file",
+    description:
+      "Sửa một đoạn trong file có sẵn: thay old_string bằng new_string (ZCode's edit).",
+    mutating: true,
+    syntax:
+      '  <tool name="edit_file" path="<path>" old_string="<đoạn cần thay>" new_string="<đoạn thay vào>" replace_all="<optional true|false>" />',
+  },
+  {
+    id: "ask_user",
+    name: "ask_user",
+    description:
+      "Hỏi user một câu hỏi kèm các đáp án chọn sẵn khi thực sự bị bế tắc (ZCode's AskUserQuestion).",
+    mutating: false,
+    syntax:
+      '  <tool name="ask_user" question="<câu hỏi>" options="<đáp án 1>,<đáp án 2>,<đáp án 3>" multi="<optional true|false>" />',
+  },
+  {
+    id: "todo",
+    name: "todo",
+    description:
+      "Lập/track danh sách công việc nhiều bước; mỗi lần gọi thay thế cả danh sách (ZCode's task list).",
+    mutating: false,
+    syntax: null, // documented as a <content> JSON block, see agent.ts
+  },
+  {
     id: "run_command",
     name: "run_command",
     description: "Chạy lệnh shell trong project (build, test, lint).",

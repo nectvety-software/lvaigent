@@ -23,6 +23,7 @@ import AddProviderDialog from "./AddProviderDialog";
 import { fetchApiModels, pingProviderApi } from "../lib/api-chat";
 import PermissionRules from "./PermissionRules";
 import PathDirsSettings from "./PathDirsSettings";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   getBridgeWatcherStatus,
   refreshBridgeSession,
@@ -79,6 +80,7 @@ export default function SettingsDialog({ onClose }: Props) {
   const {
     settings,
     updateSettings,
+    selectProvider,
     providers,
     updateProvider,
     addProvider,
@@ -94,6 +96,13 @@ export default function SettingsDialog({ onClose }: Props) {
   const [testResult, setTestResult] = useState<
     Record<string, { ok: boolean; msg: string }>
   >({});
+  // The app version comes from the bundle metadata, not a literal that drifts.
+  const [appVersion, setAppVersion] = useState("");
+  useEffect(() => {
+    void getVersion()
+      .then(setAppVersion)
+      .catch(() => setAppVersion(""));
+  }, []);
 
   /** Full API check: one real chat turn through the provider's protocol. */
   const handleTestConnection = async (p: (typeof providers)[number]) => {
@@ -265,7 +274,9 @@ export default function SettingsDialog({ onClose }: Props) {
           </div>
 
           <div className="mt-auto px-1">
-            <div className="text-ui-xs text-foreground-subtlest">lvaigent v0.1.0</div>
+            <div className="text-ui-xs text-foreground-subtlest">
+              {appVersion ? `lvaigent v${appVersion}` : ""}
+            </div>
           </div>
         </div>
 
@@ -428,6 +439,11 @@ export default function SettingsDialog({ onClose }: Props) {
                 {providers.map((p) => {
                   const isActive = settings.selectedProvider === p.id;
                   const isDuck = p.id === "provider_duckai";
+                  // The free lane is built in: its base URL, credential and
+                  // wire are the gateway's, so they are not editable — only
+                  // its model list is.
+                  const isFree = p.apiFormat === "free";
+                  const isBuiltin = isDuck || isFree;
                   return (
                     <div
                       key={p.id}
@@ -439,7 +455,7 @@ export default function SettingsDialog({ onClose }: Props) {
                     >
                       <div className="flex items-center gap-3">
                         <button
-                          onClick={() => updateSettings({ selectedProvider: p.id })}
+                          onClick={() => selectProvider(p.id)}
                           className={`w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors ${
                             isActive ? "border-brand" : "border-foreground-subtlest hover:border-foreground-subtle"
                           }`}
@@ -451,14 +467,19 @@ export default function SettingsDialog({ onClose }: Props) {
                           <div className="flex items-center gap-2">
                             <span className="text-ui-base font-medium text-foreground">{p.name}</span>
                             {isDuck && <span className="chip">bridge</span>}
+                            {isFree && <span className="chip">free</span>}
                             {isActive && <span className="text-ui-xs text-brand font-medium uppercase tracking-wide">active</span>}
                           </div>
                           <div className="text-ui-xs text-foreground-subtlest truncate">
                             {p.models.length} models ·{" "}
-                            {isDuck ? tr("bridge tích hợp trong app") : p.baseUrl}
+                            {isDuck
+                              ? tr("bridge tích hợp trong app")
+                              : isFree
+                                ? tr("miễn phí — không cần API key, không cần đăng nhập")
+                                : p.baseUrl}
                           </div>
                         </div>
-                        {!isDuck && (
+                        {!isBuiltin && (
                           <button
                             onClick={() => { removeProvider(p.id); addToast(trf("Đã xóa {name}", { name: p.name }), "info"); }}
                             className="p-1.5 rounded-lg hover:bg-destructive/15 text-foreground-subtlest hover:text-destructive transition-colors"
@@ -469,7 +490,7 @@ export default function SettingsDialog({ onClose }: Props) {
                         )}
                       </div>
 
-                      {!isDuck && (
+                      {!isBuiltin && (
                         <div className="space-y-2">
                           <div className="flex items-center gap-2">
                             <input
@@ -490,14 +511,25 @@ export default function SettingsDialog({ onClose }: Props) {
                               ]}
                             />
                           </div>
+                        </div>
+                      )}
+
+                      {!isDuck && (
+                        <div className="space-y-2">
                           <div className="flex items-center gap-2">
-                            <input
-                              type="password"
-                              value={p.apiKey}
-                              onChange={(e) => updateProvider(p.id, { apiKey: e.target.value })}
-                              placeholder="API key (sk-...)"
-                              className="input-field font-mono text-ui-xs py-1.5 flex-1"
-                            />
+                            {isFree ? (
+                              <div className="flex-1 min-w-0 text-ui-xs text-foreground-subtlest font-mono truncate">
+                                {p.baseUrl}
+                              </div>
+                            ) : (
+                              <input
+                                type="password"
+                                value={p.apiKey}
+                                onChange={(e) => updateProvider(p.id, { apiKey: e.target.value })}
+                                placeholder="API key (sk-...)"
+                                className="input-field font-mono text-ui-xs py-1.5 flex-1"
+                              />
+                            )}
                             <button
                               onClick={() => handleFetchModels(p)}
                               disabled={fetchingId === p.id}

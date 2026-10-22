@@ -71,6 +71,41 @@ export interface Message {
   mode?: AgentMode;
   /** True when the user stopped this reply mid-stream. */
   stopped?: boolean;
+  /** Thumbs feedback on a finished assistant reply (toggles off on re-click). */
+  feedback?: "up" | "down";
+  /**
+   * The agent's latest todo list, shown as a checklist above the reply.
+   *
+   * Mirrors ZCode's `runtime-task` list: each `todo` tool call REPLACES the
+   * whole list, so the model can tick items off by resending the list with
+   * updated statuses. Kept on the message, not the store, so an old reply
+   * keeps the list it was produced with.
+   */
+  todos?: TodoItem[];
+}
+
+/** One row of the agent's todo list (ZCode's task item). */
+export interface TodoItem {
+  /** Imperative description: what will be done, not a status. */
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
+/**
+ * A question the agent asked mid-run (ZCode's `ask_user_question`), waiting for
+ * the user's answer. Resolved through the same modal flow as a permission
+ * prompt, but the answer is a CHOICE rather than yes/no — including free text
+ * via "Other", which ZCode always offers.
+ */
+export interface PendingQuestion {
+  id: string;
+  /** The question text shown in the dialog. */
+  question: string;
+  /** Preset answers; the user may also type their own. */
+  options: string[];
+  /** True when several options may be picked at once. */
+  multiSelect: boolean;
+  resolve: (answer: string | null) => void;
 }
 
 export type AttachmentKind = "file" | "image" | "folder";
@@ -131,7 +166,7 @@ export interface ProviderModel {
   supportsImage?: boolean;
 }
 
-export type ApiFormat = "chat" | "openai" | "anthropic" | "responses";
+export type ApiFormat = "chat" | "openai" | "anthropic" | "responses" | "free";
 
 export interface Provider {
   id: string;
@@ -348,6 +383,9 @@ export type SkillId =
   | "web_read"
   | "web_search"
   | "write_file"
+  | "edit_file"
+  | "ask_user"
+  | "todo"
   | "run_command";
 
 /**

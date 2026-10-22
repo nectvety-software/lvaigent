@@ -1,6 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { SKILLS, ALL_SKILL_IDS, ALL_PROMPT_SECTION_IDS } from "./skills";
-import type { PromptSectionId, SkillId } from "../types";
+import {
+  PatchApplyError,
+  addFileContent,
+  applyHunks,
+  patchLineCounts,
+  parsePatch,
+} from "./patch";
+import type { PatchOp } from "./patch";
+import type { PromptSectionId, SkillId, TodoItem } from "../types";
 
 // ---------------------------------------------------------------------------
 // Agent tool protocol
@@ -16,6 +24,33 @@ export const MAX_AGENT_STEPS = 10;
 
 const MAX_GREP_RESULTS = 120;
 const MAX_TOOL_MSG_CHARS = 20_000;
+
+/**
+ * Files read since the app started, as absolute paths.
+ *
+ * ZCode's edit tool refuses to touch a file it has not Read in the current
+ * conversation (`FILE_NOT_READ`), because an edit whose `old_string` was invented
+ * from memory silently misses. This app keeps the same contract with the
+ * cheapest honest version of it: a set of paths a successful `read_file` has
+ * produced. It is intentionally per-session rather than per-conversation — the
+ * worst case of a stale entry is an edit that the old tool set allowed anyway.
+ */
+const readFileState = new Set<string>();
+
+/** Record that this absolute path was read (called by read_file). */
+export function markFileRead(absPath: string): void {
+  readFileState.add(absPath);
+}
+
+/** True when read_file has produced this path since startup. */
+export function wasFileRead(absPath: string): boolean {
+  return readFileState.has(absPath);
+}
+
+/** Test seam: forget all read state (so tests start from ZCode's contract). */
+export function resetReadFileState(): void {
+  readFileState.clear();
+}
 
 /**
  * duck.ai's composer is a hard 16,000-character field.
@@ -171,6 +206,27 @@ const RULES: readonly PromptRule[] = [
     text: "Read the relevant file(s) BEFORE answering or editing. Do NOT guess APIs.",
   },
   {
+    // The reported dead-end, third form: the model named the exact files
+    // (`src/gfx.lua`, `src/ui.lua`) and then asked the user to paste their
+    // contents instead of reading them with its own tools — an agent that
+    // cannot produce code on its own. Naming the anti-pattern in the prompt is
+    // cheaper than recovering from it after the fact.
+    requiresAny: ["read_file", "glob", "grep"],
+    text: "NEVER ask the user to paste, attach, drop or send file contents —\n   you have read_file/glob/grep for exactly that. Emit the tool block and\n   read the project yourself, every time.",
+  },
+  {
+    // ZCode's edit contract, stated so a model trained on whole-file writes
+    // does not burn the turn: the guard is enforced in the executor too.
+    requiresAny: ["edit_file"],
+    text: "Prefer edit_file over write_file when changing PART of a file (it is\n   cheaper and cannot lose the rest). Read the file first — edit_file\n   refuses a path that was not read this session. old_string must match the\n   file EXACTLY (indentation, blank lines, punctuation) and be UNIQUE: on a\n   multi-match the edit is refused unless replace_all=\"true\".",
+  },
+  {
+    // ZCode's AskUserQuestion guidance, condensed: the tool is for decisions
+    // the user owns, not for questions the code can answer.
+    requiresAny: ["ask_user"],
+    text: "ask_user is only for a decision that is genuinely the user's and that\n   you cannot resolve from the request, the code, or a sensible default. For\n   everything else, pick the obvious option, say so, and proceed.",
+  },
+  {
     text: "MAY emit several tool blocks in one turn when multiple files are needed.",
   },
   {
@@ -215,8 +271,12 @@ const CODING_WORKFLOW: readonly PromptRule[] = [
     text: "Study what you will touch: glob for candidates, then read_file with line\n   numbers. For large files continue with start_line.",
   },
   {
-    requiresAny: ["write_file"],
-    text: "Implement with write_file (full exact content). Create new files freely\n   (parents are created); rewrite existing files completely.",
+    requiresAny: ["edit_file", "write_file"],
+    text: "Implement with edit_file when changing part of a file (read it first, keep\n   old_string unique and exact) and write_file when creating a file or\n   rewriting it wholesale.",
+  },
+  {
+    requiresAny: ["todo"],
+    text: "For work with three or more steps, emit a todo list first (ZCode's task\n   list): the first message may be the plan, then track it. Each todo call\n   REPLACES the whole list — resend it with updated statuses as you go.",
   },
   {
     requiresAny: ["run_command"],
@@ -253,6 +313,14 @@ function renderRules(rules: readonly PromptRule[], on: (r: Requirement) => boole
 const WRITE_TOOL_BLOCK = `  <tool name="write_file" path="<path>">
   <content>
 ...every line of the file exactly as it should be written...
+  </content>
+  </tool>`;
+
+const TODO_TOOL_BLOCK = `  <tool name="todo">
+  <content>
+[{"content": "Đọc src/gfx.lua", "status": "in_progress"},
+ {"content": "Vẽ lại nền pop art", "status": "pending"},
+ {"content": "Chạy build kiểm tra", "status": "pending"}]
   </content>
   </tool>`;
 
@@ -326,6 +394,13 @@ export function buildAgentSysPrompt(
     chunks.push(
       "The write tool must wrap the exact, complete file content (full newlines,\nindentation, no extra escaping) between <content> and </content>:",
       WRITE_TOOL_BLOCK
+    );
+  }
+
+  if (skillOn("todo")) {
+    chunks.push(
+      "The todo tool carries the WHOLE list as a JSON array of\n{\"content\": \"...\", \"status\": \"pending|in_progress|completed\"} between <content>\nand </content>; mark exactly one item in_progress:",
+      TODO_TOOL_BLOCK
     );
   }
 
@@ -469,7 +544,17 @@ export function looksLikeToolRefusal(text: string): boolean {
   // the ask in adjacent clauses — "chỉ có danh sách file …, hoặc bật quyền truy
   // cập project" — and a sentence-only split kept them apart, so the pair never
   // matched. Comma clauses are short enough that this cannot pair across topics.
-  const clauses = text.split(/[.!?\n,;]+/);
+  //
+  // A dot only ends a clause when whitespace or the end of the text follows it.
+  // The naive `[.!?]` class also cut on the dot inside every file path and
+  // extension, and that is exactly where the reported refusal lives: "Mình vẫn
+  // cần nội dung `src/gfx.lua` … mà không đoán cấu trúc" put the capability noun
+  // ("nội dung") on one side of `gfx.lua`'s dot and the negation ("không") on
+  // the other, so no clause ever held the pair, `looksLikeToolRefusal` returned
+  // false, and the loop passed the prose off as the final answer — an agent that
+  // asks the user to paste file contents instead of reading them itself.
+  // URLs ("https://a.b/c") and versions ("1.2.3") survive for the same reason.
+  const clauses = text.split(/[?!\n,;]+|\.(?=\s|$)/);
   return (
     clauses.some(
       (clause) => CAPABILITY_NOUN_RE.test(clause) && CAPABILITY_ABSENT_RE.test(clause)
@@ -556,6 +641,62 @@ export function stripToolBlocks(text: string): string {
   return text.replace(TOOL_BLOCK_RE, "").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+const TODO_STATUSES = new Set(["pending", "in_progress", "completed"]);
+
+/**
+ * Parse the `<content>` body of a `todo` tool call.
+ *
+ * Mirrors ZCode's task list: each call carries the WHOLE list (in-progress item
+ * first, like their prompt demands), so ticking an item off is one more call
+ * with the updated statuses. Malformed rows are dropped with a count in the
+ * error, so a single typo cannot blank the checklist the user is watching.
+ */
+export function parseTodoList(raw: string): { items: TodoItem[]; error: string | null } {
+  const text = (raw ?? "").trim();
+  if (!text) return { items: [], error: "empty body" };
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch (e) {
+    return { items: [], error: `invalid JSON: ${String(e)}` };
+  }
+  if (!Array.isArray(data)) return { items: [], error: "expected a JSON array" };
+  const items: TodoItem[] = [];
+  let dropped = 0;
+  for (const row of data) {
+    const r = row as { content?: unknown; status?: unknown };
+    const content = typeof r?.content === "string" ? r.content.trim() : "";
+    const status = typeof r?.status === "string" ? r.status : "pending";
+    if (!content || !TODO_STATUSES.has(status)) {
+      dropped++;
+      continue;
+    }
+    items.push({ content, status: status as TodoItem["status"] });
+  }
+  if (items.length === 0) return { items: [], error: `no valid rows (${dropped} dropped)` };
+  const error = dropped > 0 ? `${dropped} malformed row(s) dropped` : null;
+  return { items: items.slice(0, 20), error };
+}
+
+/** Render a todo list for the model to read back (and for the step summary). */
+export function todoListText(items: readonly TodoItem[]): string {
+  return items
+    .map((i) => {
+      const mark = i.status === "completed" ? "[x]" : i.status === "in_progress" ? "[~]" : "[ ]";
+      return `${mark} ${i.content}`;
+    })
+    .join("\n");
+}
+
+/** Compact one-line summary for the step row, e.g. "2/5 done · ~ đang chạy". */
+function todoSummary(items: readonly TodoItem[]): string {
+  const done = items.filter((i) => i.status === "completed").length;
+  const running = items.find((i) => i.status === "in_progress");
+  return running
+    ? `${done}/${items.length} xong · đang: ${running.content}`
+    : `${done}/${items.length} xong`;
+}
+
 export interface ToolActivity {
   tool: string;
   args: Record<string, string>;
@@ -581,6 +722,16 @@ export interface ToolOutcome {
 export interface ExecuteToolOptions {
   /** Permission gate: return false to deny the tool (used for run_command). */
   ask?: (t: ParsedTool) => Promise<boolean>;
+  /**
+   * Question gate (ZCode's AskUserQuestion): show the user a multiple-choice
+   * question and resolve with their answer, or `null` when they dismissed the
+   * dialog. Absent means the agent must not ask.
+   */
+  askQuestion?: (q: {
+    question: string;
+    options: string[];
+    multiSelect: boolean;
+  }) => Promise<string | null>;
   /** Shell to use for run_command: powershell | cmd | bash. */
   shell?: string;
   /** PLAN mode: mutating tools are refused before execution. */
@@ -679,6 +830,9 @@ async function runTool(
         max_lines: null,
         root: projectRoot,
       });
+      // ZCode's read-before-edit contract: an edit may only follow a real read
+      // of the same file, so record the exact absolute path that was produced.
+      markFileRead(fullPath);
       const numbered = chunk.content
         .split("\n")
         .map((ln, i) => `${String(chunk.start_line + i + 1).padStart(5)}| ${ln}`)
@@ -835,6 +989,198 @@ async function runTool(
         message: `[tool_result] Wrote ${bytes} bytes to ${pathArg}.`,
       };
     }
+    case "edit_file": {
+      if (opts.readOnly) {
+        return {
+          activity: { tool: t.name, args: t.args, summary: "plan mode" },
+          message: "[tool_info] edit_file is disabled in PLAN mode. Propose the change in your plan instead; the user will switch to BUILD mode to apply it.",
+        };
+      }
+      const pathArg = t.args.path;
+      if (!pathArg) {
+        return {
+          activity: { tool: t.name, args: t.args, summary: "missing path" },
+          message:
+            '[tool_error] edit_file requires a path attribute. To CREATE a file use write_file (or edit_file with old_string="" on a path that does not exist).',
+        };
+      }
+      const oldString = t.args.old_string ?? "";
+      const newString = t.args.new_string ?? "";
+      if (newString === "" && oldString === "") {
+        return {
+          activity: { tool: t.name, args: t.args, summary: "empty strings" },
+          message:
+            "[tool_error] edit_file needs new_string (both old_string and new_string are empty). To delete a block, set new_string to the empty string only.",
+        };
+      }
+      if (!projectRoot) {
+        return {
+          activity: { tool: t.name, args: t.args, summary: "no project" },
+          message: "[tool_error] No project is open. Ask the user to open a project folder first, then answer from the conversation context.",
+        };
+      }
+      const fullPath = resolveProjectPath(pathArg, projectRoot);
+
+      // Read the current content: the same backend path write_file uses for its
+      // before-snapshot. A missing file is fine when old_string is empty — that
+      // is ZCode's create case — and an error otherwise.
+      let current = "";
+      let exists = true;
+      try {
+        current = await invoke<string>("read_file_content", { path: fullPath });
+      } catch {
+        exists = false;
+      }
+      if (!exists && oldString !== "") {
+        return {
+          activity: { tool: t.name, args: t.args, summary: "file not found" },
+          message: `[tool_error] ${pathArg} does not exist, so there is nothing to replace. Create it with write_file instead.`,
+        };
+      }
+      if (exists && oldString === "" && current.length > 0) {
+        // ZCode's FILE_EXISTS_NO_OLD_STRING: a wholesale replace is write_file's
+        // job, and silently allowing it here would let a "small edit" that
+        // forgot its old_string erase the file.
+        return {
+          activity: { tool: t.name, args: t.args, summary: "file exists" },
+          message: `[tool_error] ${pathArg} already exists, so an empty old_string cannot be used to replace it — that is write_file's job. Send the exact old_string you want to replace.`,
+        };
+      }
+      if (exists && !wasFileRead(fullPath)) {
+        return {
+          activity: { tool: t.name, args: t.args, summary: "file not read" },
+          message: `[tool_error] ${pathArg} has not been read in this session. Read it first with read_file, then edit the exact text you saw — an old_string written from memory is what this guard exists for.`,
+        };
+      }
+      if (exists && oldString !== "" && oldString === newString) {
+        return {
+          activity: { tool: t.name, args: t.args, summary: "no change" },
+          message: "[tool_error] old_string and new_string are identical, so nothing would change. If the edit is meant to move code, change the new_string.",
+        };
+      }
+
+      let next = current;
+      if (oldString === "") {
+        // Create (empty old_string + missing file). An existing, non-empty file
+        // is a likely path mix-up: replacing it wholesale via edit_file is
+        // exactly what write_file is for.
+        next = newString;
+      } else {
+        // Count non-overlapping occurrences by walking the string (a plain
+        // split/join would expand `$&`-style tokens in new_string).
+        let count = 0;
+        let idx = 0;
+        for (;;) {
+          const at = current.indexOf(oldString, idx);
+          if (at === -1) break;
+          count++;
+          idx = at + oldString.length;
+        }
+        if (count === 0) {
+          const head = current.slice(0, 400).replace(/\s+$/, "");
+          return {
+            activity: { tool: t.name, args: t.args, summary: "old_string not found" },
+            message: `[tool_error] old_string was not found in ${pathArg}. Read the file and copy the text EXACTLY (whitespace, indentation and line endings included). First 400 chars of the file:\n${head}`,
+          };
+        }
+        if (count > 1 && !/^true$/i.test((t.args.replace_all ?? "").trim())) {
+          return {
+            activity: { tool: t.name, args: t.args, summary: "ambiguous match" },
+            message: `[tool_error] old_string matches ${count} places in ${pathArg}, so the edit is ambiguous. Add surrounding lines to make it unique, or pass replace_all="true" to replace every occurrence.`,
+          };
+        }
+        // Literal replace: build the result around the matches so `$` in
+        // new_string can never be treated as a replacement pattern.
+        next = "";
+        let cursor = 0;
+        idx = 0;
+        for (;;) {
+          const at = current.indexOf(oldString, idx);
+          if (at === -1) {
+            next += current.slice(cursor);
+            break;
+          }
+          next += current.slice(cursor, at) + newString;
+          cursor = at + oldString.length;
+          idx = cursor;
+        }
+      }
+
+      if (opts.ask && !(await opts.ask(t))) {
+        return {
+          activity: { tool: t.name, args: t.args, summary: "permission denied" },
+          message: "[tool_info] Permission to edit this file was denied by the user. Do not retry it and do not try another path for the same change; adapt or ask the user what to do instead.",
+        };
+      }
+      const bytes = await invoke<number>("write_file", {
+        path: fullPath,
+        content: next,
+        root: projectRoot ?? null,
+      });
+      markFileRead(fullPath); // the file on disk is now what we just wrote
+      const replaced = oldString === "" ? 0 : (current.split(oldString).length - 1);
+      return {
+        activity: {
+          tool: t.name,
+          args: { path: pathArg },
+          summary: exists
+            ? `${bytes} bytes written · ${replaced} occurrence(s) replaced`
+            : `${bytes} bytes written · file created`,
+        },
+        message: exists
+          ? `[tool_result] Updated ${pathArg} (${replaced} occurrence${replaced === 1 ? "" : "s"} replaced, ${bytes} bytes now).`
+          : `[tool_result] Created ${pathArg} (${bytes} bytes).`,
+      };
+    }
+    case "ask_user": {
+      const question = (t.args.question ?? "").trim();
+      if (!question) {
+        return {
+          activity: { tool: t.name, args: t.args, summary: "missing question" },
+          message: "[tool_error] ask_user requires a question attribute",
+        };
+      }
+      const options = (t.args.options ?? "")
+        .split(/[,;|]/)
+        .map((o) => o.trim())
+        .filter(Boolean)
+        .slice(0, 6);
+      const multiSelect = /^true$/i.test((t.args.multi ?? "").trim());
+      if (!opts.askQuestion) {
+        return {
+          activity: { tool: t.name, args: t.args, summary: "cannot ask" },
+          message: "[tool_error] ask_user is not available in this run. Pick the most reasonable option yourself and say which one you chose.",
+        };
+      }
+      const answer = await opts.askQuestion({ question, options, multiSelect });
+      if (answer === null) {
+        // ZCode's wording: a dismissed dialog is not a refusal.
+        return {
+          activity: { tool: t.name, args: t.args, summary: "user did not answer" },
+          message: "[tool_result] The user did not answer this question. Continue using your best judgment; do not treat this as a rejection or invent a user preference.",
+        };
+      }
+      return {
+        activity: { tool: t.name, args: t.args, summary: `answered: ${answer}` },
+        message: `[tool_result] The user answered: ${answer}. Continue with this answer in mind.`,
+      };
+    }
+    case "todo": {
+      const raw = t.args.content ?? "";
+      const { items, error } = parseTodoList(raw);
+      if (items.length === 0) {
+        return {
+          activity: { tool: t.name, args: t.args, summary: "invalid todo list" },
+          message: `[tool_error] The todo list could not be read (${error ?? "unknown"}). Send a JSON array like [{"content":"...","status":"pending"}], with status one of pending|in_progress|completed.`,
+        };
+      }
+      const body = todoListText(items);
+      return {
+        activity: { tool: t.name, args: t.args, summary: todoSummary(items) },
+        // The store mirrors this onto the message so the checklist is visible.
+        message: `[tool_result] Todo list accepted (${items.length} item(s)):\n${body}`,
+      };
+    }
     case "run_command": {
       if (opts.readOnly) {
         return {
@@ -842,7 +1188,11 @@ async function runTool(
           message: "[tool_info] run_command is disabled in PLAN mode. Suggest verification commands in your plan instead.",
         };
       }
-      const cmd = (t.args.command ?? "").trim();
+      // The command may also arrive as the block's body: a command that
+      // carries both quote kinds cannot be written as an attribute (the
+      // attribute parser ends at the first inner quote), and a truncated
+      // command is the wrong command.
+      const cmd = (t.args.command ?? t.args.content ?? "").trim();
       if (!cmd) {
         return {
           activity: { tool: t.name, args: t.args, summary: "missing command" },

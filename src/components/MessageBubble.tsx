@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore, attachmentKindFor } from "../store";
 import { stripToolBlocks } from "../lib/agent";
@@ -23,6 +23,15 @@ import {
   Folder,
   Square,
   GitCompare,
+  ThumbsUp,
+  ThumbsDown,
+  MoreHorizontal,
+  Trash2,
+  HelpCircle,
+  ListChecks,
+  CircleDashed,
+  CheckCircle2,
+  Circle,
 } from "lucide-react";
 import type { Message, AgentStep } from "../types";
 import { parseUnifiedDiff, hunksToRows } from "../lib/git-diff";
@@ -40,6 +49,9 @@ const TOOL_META: Record<string, { icon: typeof Wrench; label: (a: Record<string,
   web_search: { icon: SearchCheck, label: (a) => `“${a.query || "”"}` },
   run_command: { icon: Terminal, label: (a) => a.command || "" },
   write_file: { icon: FileEdit, label: (a) => a.path || "" },
+  edit_file: { icon: FileEdit, label: (a) => a.path || "" },
+  ask_user: { icon: HelpCircle, label: (a) => a.question || "" },
+  todo: { icon: ListChecks, label: () => "" },
 };
 
 function stepIcon(step: AgentStep) {
@@ -238,9 +250,175 @@ function StepList({ steps, streaming }: { steps: AgentStep[]; streaming: boolean
   );
 }
 
+/**
+ * Hover action row on a message: 👍 👎 ⧉ ⋯ (WorkBuddy-style message actions).
+ *
+ * Shown for BOTH roles — the user's own turns are copied and deleted too —
+ * and only after streaming ends, when the text is final and the reply is
+ * worth judging. The ⋯ menu holds the destructive action behind a second
+ * confirmation step, because a deleted message is gone from the persisted
+ * conversation immediately.
+ */
+function MessageActions({
+  message,
+  copyText,
+}: {
+  message: Message;
+  copyText: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const conversationId = useStore((s) => s.activeConversationId);
+  const setMessageFeedback = useStore((s) => s.setMessageFeedback);
+  const removeMessage = useStore((s) => s.removeMessage);
+  const addToast = useStore((s) => s.addToast);
+  useLang();
+
+  // Dismiss on outside click or Escape, so a stray menu never covers the chat.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen]);
+
+  const closeMenu = useCallback(() => {
+    setMenuOpen(false);
+    setConfirmDelete(false);
+  }, []);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(copyText);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+    addToast(t("Đã copy"), "success");
+  };
+
+  const thumb = (v: "up" | "down") => (
+    <button
+      key={v}
+      onClick={() => setMessageFeedback(conversationId!, message.id, v)}
+      aria-pressed={message.feedback === v}
+      className={`p-1 rounded transition-colors ${
+        message.feedback === v
+          ? "text-brand bg-surface-hover"
+          : "text-foreground-subtlest hover:text-foreground hover:bg-surface-hover"
+      }`}
+      title={t(v === "up" ? "Hữu ích" : "Không hữu ích")}
+    >
+      {v === "up" ? <ThumbsUp size={12} /> : <ThumbsDown size={12} />}
+    </button>
+  );
+
+  return (
+    <div className="flex items-center gap-0.5 mt-1.5 opacity-0 group-hover/msg:opacity-100 focus-within:opacity-100 transition-opacity">
+      {message.role === "assistant" && (
+        <>
+          {thumb("up")}
+          {thumb("down")}
+        </>
+      )}
+      <button
+        onClick={handleCopy}
+        className="p-1 rounded hover:bg-surface-hover text-foreground-subtlest hover:text-foreground transition-colors"
+        title={t("Sao chép")}
+      >
+        {copied ? <Check size={12} className="text-success" /> : <Copy size={12} />}
+      </button>
+      <div className="relative" ref={menuRef}>
+        <button
+          onClick={() => {
+            setMenuOpen((v) => !v);
+            setConfirmDelete(false);
+          }}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          className={`p-1 rounded transition-colors ${
+            menuOpen
+              ? "text-foreground bg-surface-hover"
+              : "text-foreground-subtlest hover:text-foreground hover:bg-surface-hover"
+          }`}
+          title={t("Thêm tác vụ")}
+        >
+          <MoreHorizontal size={12} />
+        </button>
+        {menuOpen && (
+          <div
+            role="menu"
+            className="menu-surface absolute bottom-full left-0 mb-2 w-40 flex flex-col gap-0.5 animate-scale-in z-50"
+          >
+            <button
+              role="menuitem"
+              onClick={() => {
+                handleCopy();
+                closeMenu();
+              }}
+              className="menu-row-stacked"
+            >
+              <Copy className="size-3.5 shrink-0 text-foreground-subtle" />
+              <span className="flex-1 min-w-0 text-ui-base text-foreground">
+                {t("Sao chép")}
+              </span>
+            </button>
+            <div className="menu-separator" />
+            {confirmDelete ? (
+              <div className="px-2 py-1.5 flex flex-col gap-1">
+                <span className="text-ui-xs text-destructive">
+                  {t("Xác nhận xóa tin nhắn này?")}
+                </span>
+                <div className="flex gap-1">
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      removeMessage(conversationId!, message.id);
+                      addToast(t("Đã xóa tin nhắn"), "success");
+                      closeMenu();
+                    }}
+                    className="flex-1 px-2 py-1 rounded text-ui-xs font-medium bg-destructive text-white hover:opacity-90 transition-opacity"
+                  >
+                    {t("Xác nhận xóa")}
+                  </button>
+                  <button
+                    role="menuitem"
+                    onClick={closeMenu}
+                    className="flex-1 px-2 py-1 rounded text-ui-xs font-medium border border-border text-foreground-subtle hover:bg-surface-hover transition-colors"
+                  >
+                    {t("Hủy")}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                role="menuitem"
+                onClick={() => setConfirmDelete(true)}
+                className="menu-row-stacked"
+              >
+                <Trash2 className="size-3.5 shrink-0 text-destructive" />
+                <span className="flex-1 min-w-0 text-ui-base text-destructive">
+                  {t("Xóa tin nhắn")}
+                </span>
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function MessageBubble({ message }: { message: Message }) {
   useLang();
-  const [copied, setCopied] = useState(false);
 
   const isUser = message.role === "user";
   // Legacy turns were persisted with raw <tool> tags (the old strip regex
@@ -250,12 +428,6 @@ export default function MessageBubble({ message }: { message: Message }) {
     () => (isUser ? message.content : stripToolBlocks(message.content)),
     [isUser, message.content]
   );
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(visible);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
 
   const time = new Date(message.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const waiting = message.isStreaming && !message.content && !(message.steps?.length);
@@ -293,7 +465,10 @@ export default function MessageBubble({ message }: { message: Message }) {
           <div className="rounded-lg border border-border bg-surface px-3.5 py-2.5 text-ui-base text-foreground whitespace-pre-wrap break-words">
             {message.content}
           </div>
-          <div className="text-ui-xs text-foreground-subtlest mt-1 px-0.5">{time}</div>
+          <div className="flex items-center gap-2 mt-1 px-0.5">
+            <span className="text-ui-xs text-foreground-subtlest">{time}</span>
+            <MessageActions message={message} copyText={message.content} />
+          </div>
         </div>
       ) : (
         <div className="py-3">
@@ -307,6 +482,31 @@ export default function MessageBubble({ message }: { message: Message }) {
 
           {message.steps && message.steps.length > 0 && (
             <StepList steps={message.steps} streaming={!!message.isStreaming} />
+          )}
+
+          {message.todos && message.todos.length > 0 && (
+            <div className="mb-2 rounded-lg border border-border bg-surface px-2.5 py-2 flex flex-col gap-1">
+              {message.todos.map((item, i) => (
+                <div key={`${item.status}-${i}`} className="flex items-start gap-2 text-ui-xs">
+                  {item.status === "completed" ? (
+                    <CheckCircle2 size={12} className="shrink-0 mt-0.5 text-success" />
+                  ) : item.status === "in_progress" ? (
+                    <CircleDashed size={12} className="shrink-0 mt-0.5 text-brand" />
+                  ) : (
+                    <Circle size={12} className="shrink-0 mt-0.5 text-foreground-subtlest" />
+                  )}
+                  <span
+                    className={
+                      item.status === "completed"
+                        ? "line-through text-foreground-subtlest"
+                        : "text-foreground-subtle"
+                    }
+                  >
+                    {item.content}
+                  </span>
+                </div>
+              ))}
+            </div>
           )}
 
           {message.mode === "plan" && (
@@ -356,15 +556,7 @@ export default function MessageBubble({ message }: { message: Message }) {
           ) : null}
 
           {visible && !message.isStreaming && (
-            <div className="flex items-center gap-0.5 mt-1.5 opacity-0 group-hover/msg:opacity-100 transition-opacity">
-              <button
-                onClick={handleCopy}
-                className="p-1 rounded hover:bg-surface-hover text-foreground-subtlest hover:text-foreground transition-colors"
-                title="Copy"
-              >
-                {copied ? <Check size={12} /> : <Copy size={12} />}
-              </button>
-            </div>
+            <MessageActions message={message} copyText={visible} />
           )}
         </div>
       )}

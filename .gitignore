@@ -4,9 +4,14 @@ node_modules/
 # Build output
 dist/
 src-tauri/target/
+# Packaged installers: build artifacts, not source
+release/
 
 # Test coverage
 coverage/
+
+# Another agent's local notes
+.workbuddy-ai/
 
 # Logs & scratch
 *.log

@@ -5,6 +5,7 @@
 // protocol differs.
 
 import type { Provider } from "../types";
+import { fetchFreeModels, streamFreeModel } from "./free-model";
 
 export interface ApiChatMessage {
   role: "system" | "user" | "assistant" | "tool";
@@ -16,6 +17,14 @@ export interface ApiStreamOptions {
   messages: ApiChatMessage[];
   signal?: AbortSignal;
   onProgress?: (partial: string) => void;
+  /**
+   * What pins this turn to one upstream session.
+   *
+   * Only the free lane uses it: its quota is accounted per session, so a
+   * conversation must keep one id for its whole life. The value is a seed —
+   * the transport derives the gateway's own session encoding from it.
+   */
+  session?: string;
 }
 
 /** Map our roles to Anthropic's schema (tool -> user with a prefix). */
@@ -203,6 +212,9 @@ export async function streamApiChat(
   provider: Provider,
   opts: ApiStreamOptions
 ): Promise<string> {
+  // The free lane is posted from Rust: its fingerprint needs an exact
+  // User-Agent, which a webview fetch cannot send.
+  if (provider.apiFormat === "free") return streamFreeModel(provider, opts);
   if (provider.apiFormat === "anthropic") return streamAnthropic(provider, opts);
   if (provider.apiFormat === "responses") return streamOpenAiResponses(provider, opts);
   return streamOpenAiCompatible(provider, opts);
@@ -238,6 +250,12 @@ export async function pingProviderApi(
 
 /** Fetch the model list for a provider (OpenAI /models, best-effort). */
 export async function fetchApiModels(provider: Provider): Promise<{ id: string; name: string }[]> {
+  // The free lane's listing needs the same fingerprint as its turns, so it
+  // comes from Rust too.
+  if (provider.apiFormat === "free") {
+    const rows = await fetchFreeModels();
+    return rows.map((m) => ({ id: m.id, name: m.name }));
+  }
   const base = provider.baseUrl.replace(/\/+$/, "");
   const headers: Record<string, string> = {
     Authorization: `Bearer ${provider.apiKey}`,

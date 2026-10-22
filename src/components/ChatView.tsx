@@ -31,6 +31,7 @@ import type { FileNode } from "../types";
 import MessageBubble from "./MessageBubble";
 import HoverPreview from "./HoverPreview";
 import PermissionPrompt from "./PermissionPrompt";
+import QuestionPrompt from "./QuestionPrompt";
 
 /** Flatten project tree into pickable files with depth for indent. */
 function flattenFiles(nodes: FileNode[] | undefined, depth: number, out: { path: string; name: string; depth: number }[]): void {
@@ -59,6 +60,8 @@ export default function ChatView() {
     detachFile,
     pendingApproval,
     answerApproval,
+    pendingQuestion,
+    answerQuestion,
     setFullAccess,
     projectSync,
   } = useStore();
@@ -378,6 +381,16 @@ export default function ChatView() {
           tool={pendingApproval.tool}
           args={pendingApproval.args}
           onDecide={(decision) => answerApproval(pendingApproval.id, decision)}
+        />
+      )}
+
+      {/* The agent's mid-run question — ZCode's AskUserQuestion dialog */}
+      {pendingQuestion && (
+        <QuestionPrompt
+          question={pendingQuestion.question}
+          options={pendingQuestion.options}
+          multiSelect={pendingQuestion.multiSelect}
+          onAnswer={(answer) => answerQuestion(pendingQuestion.id, answer)}
         />
       )}
 

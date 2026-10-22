@@ -85,6 +85,10 @@ function App() {
     // Plugin skills/commands live under <app data>/plugins, outside any project,
     // so they are read once at boot and after every install/toggle.
     void useStore.getState().reloadPluginContent();
+    // The free model lane publishes its roster at the gateway, not in the app,
+    // so the list is re-read at boot: a model that disappeared upstream must
+    // disappear from the picker too.
+    void useStore.getState().refreshFreeModels();
     // The store already boots on the saved conversation, so this single call
     // resolves the folder that session worked in. Falling back to the most
     // recent workspace covers a fresh launch with history but no session.
