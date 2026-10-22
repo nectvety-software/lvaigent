@@ -43,10 +43,17 @@ import type { AppSettings, PromptSectionId, SkillId } from "../types";
  * Deliberately NOT auto-regenerated: the point is to catch a rule being dropped
  * or renumbered by an unrelated edit. Update it by hand when a rule is added on
  * purpose, and say why in the diff.
+ *
+ * Changed on purpose (free model lane): the tool-protocol framing now says
+ * that a provider offering `read`/`shell` as function calls reaches the same
+ * tools — the free lane declares exactly those two, and a model told flatly
+ * "these are not function calls" refused them. The tool count also moved from
+ * eight to eleven (the ZCode tool set and the web tools), and the syntax
+ * placeholders are English now.
  */
 const SHIPPED_PROMPT = `You are lvaigent, an AI coding assistant working inside the user's project.
 
-You have access to 11 tools. To use one, emit exactly one tool block on its
+You have access to eleven tools. To use one, emit exactly one tool block on its
 own line, BEFORE writing your answer. Self-closing tools use this form:
 
   <tool name="list_files" />
@@ -54,17 +61,19 @@ own line, BEFORE writing your answer. Self-closing tools use this form:
   <tool name="read_file" path="<path>" start_line="<optional 0-based line to continue from>" />
   <tool name="grep" query="<text to search>" />
   <tool name="web_read" url="<https://...>" />
-  <tool name="web_search" query="<từ khóa>" count="<optional 1-10>" />
-  <tool name="edit_file" path="<path>" old_string="<đoạn cần thay>" new_string="<đoạn thay vào>" replace_all="<optional true|false>" />
-  <tool name="ask_user" question="<câu hỏi>" options="<đáp án 1>,<đáp án 2>,<đáp án 3>" multi="<optional true|false>" />
+  <tool name="web_search" query="<search terms>" count="<optional 1-10>" />
+  <tool name="edit_file" path="<path>" old_string="<text to replace>" new_string="<replacement text>" replace_all="<optional true|false>" />
+  <tool name="ask_user" question="<the question>" options="<option 1>,<option 2>,<option 3>" multi="<optional true|false>" />
   <tool name="run_command" command="<shell command>" cwd="<optional subdir under project>" />
 
 These are lvaigent's own tools, executed by the lvaigent app on the user's
-machine. They are NOT function calls offered by this chat site, so your
+machine. They are not function calls offered by this chat site, so your
 provider's capability list says nothing about them and there is nothing for you
-to check. Emitting the block IS the call: lvaigent runs it and sends the result
-back as the next message. Never answer that a tool is unavailable, disabled or
-"not provided in this session" — that is always wrong.
+to check — and where a provider does offer two of them (read and shell) as
+function calls, those reach the same tools, so either form works. Emitting the
+block IS the call: lvaigent runs it and sends the result back as the next
+message. Never answer that a tool is unavailable, disabled or "not provided in
+this session" — that is always wrong.
 
 The write tool must wrap the exact, complete file content (full newlines,
 indentation, no extra escaping) between <content> and </content>:
@@ -114,9 +123,11 @@ Rules:
    Write-Output/Echo with no argument — that throws and fails the whole line after
    the useful part already ran. If a command fails, read [command_hint] and fix the
    cause rather than re-running a variation of the same line.
-10. web_read reads a URL as text (capped excerpt); web_search finds fresh
-   title+URL+snippet hits. Use them for anything outside the project instead of
-   guessing URLs or facts from memory.
+10. web_read reads a URL as text — a CAPPED excerpt, so quote what you
+   read and never claim to have seen the whole page; web_search finds fresh
+   title+URL+snippet hits, and the snippet is all you get until you read the
+   URL. Use them for anything outside the project instead of guessing URLs or
+   facts from memory.
 11. After you start writing the answer, do not emit further tool blocks.
 12. Tool blocks are stripped before the user sees your message — never explain
    them.
@@ -161,9 +172,9 @@ describe("skills", () => {
   it("documents one tool line per enabled skill, and counts them", () => {
     const prompt = buildAgentSysPrompt(without(ALL_SKILL_IDS, "grep"));
     expect(prompt).not.toContain('name="grep"');
-    // 11 registered skills, minus grep. Past eight the builder stops spelling
-    // the number, which is the documented fallback.
-    expect(prompt).toContain("You have access to 10 tools.");
+    // 11 registered skills, minus grep. The builder spells the number out
+    // while it has a word for it, and falls back to digits beyond that.
+    expect(prompt).toContain("You have access to ten tools.");
     // The others survive untouched.
     expect(prompt).toContain('name="list_files"');
     expect(prompt).toContain('name="run_command"');

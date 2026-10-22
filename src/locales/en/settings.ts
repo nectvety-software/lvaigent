@@ -113,6 +113,28 @@ const en: Record<string, string> = {
   "luôn chặn": "always block",
   "luôn cho phép": "always allow",
   "Bỏ luật {tool}": "Remove {tool} rule",
+
+  // SkillsPromptSection — the skill registry's descriptions (src/lib/skills.ts)
+  "Liệt kê file và thư mục trong project.": "List the files and folders in the project.",
+  "Tìm file theo mẫu glob (vd: src/**/*.ts).": "Find files by a glob pattern (e.g. src/**/*.ts).",
+  "Đọc nội dung file, có số dòng, đọc tiếp bằng start_line.":
+    "Read a file's contents with line numbers; continue with start_line.",
+  "Tìm text trong toàn bộ project.": "Search text across the whole project.",
+  "Đọc nội dung text của một URL (web, docs, bài viết).":
+    "Read a URL as text (web page, docs, article).",
+  "Tìm kiếm web toàn mạng (tiêu đề + URL + trích đoạn).":
+    "Search the whole web (title + URL + snippet).",
+  "Ghi/sửa file — thay thế toàn bộ nội dung file.": "Write a file — replaces its whole contents.",
+  "Sửa một đoạn trong file có sẵn: thay old_string bằng new_string (ZCode's edit).":
+    "Edit part of an existing file: replace old_string with new_string (ZCode's edit).",
+  "Hỏi user một câu hỏi kèm các đáp án chọn sẵn khi thực sự bị bế tắc (ZCode's AskUserQuestion).":
+    "Ask the user a question with preset answers when genuinely stuck (ZCode's AskUserQuestion).",
+  "Lập/track danh sách công việc nhiều bước; mỗi lần gọi thay thế cả danh sách (ZCode's task list).":
+    "Create/track a multi-step task list; each call replaces the whole list (ZCode's task list).",
+  "Chạy lệnh shell trong project (build, test, lint).":
+    "Run a shell command in the project (build, test, lint).",
+  "write_file, edit_file và run_command có thể thay đổi project hoặc chạy lệnh trên máy.":
+    "write_file, edit_file and run_command can change the project or run commands on the machine.",
 };
 
 export default en;

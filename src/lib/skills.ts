@@ -72,7 +72,7 @@ export const SKILLS: readonly SkillDef[] = [
     name: "web_search",
     description: "Tìm kiếm web toàn mạng (tiêu đề + URL + trích đoạn).",
     mutating: false,
-    syntax: '  <tool name="web_search" query="<từ khóa>" count="<optional 1-10>" />',
+    syntax: '  <tool name="web_search" query="<search terms>" count="<optional 1-10>" />',
   },
   {
     id: "write_file",
@@ -88,7 +88,7 @@ export const SKILLS: readonly SkillDef[] = [
       "Sửa một đoạn trong file có sẵn: thay old_string bằng new_string (ZCode's edit).",
     mutating: true,
     syntax:
-      '  <tool name="edit_file" path="<path>" old_string="<đoạn cần thay>" new_string="<đoạn thay vào>" replace_all="<optional true|false>" />',
+      '  <tool name="edit_file" path="<path>" old_string="<text to replace>" new_string="<replacement text>" replace_all="<optional true|false>" />',
   },
   {
     id: "ask_user",
@@ -97,7 +97,7 @@ export const SKILLS: readonly SkillDef[] = [
       "Hỏi user một câu hỏi kèm các đáp án chọn sẵn khi thực sự bị bế tắc (ZCode's AskUserQuestion).",
     mutating: false,
     syntax:
-      '  <tool name="ask_user" question="<câu hỏi>" options="<đáp án 1>,<đáp án 2>,<đáp án 3>" multi="<optional true|false>" />',
+      '  <tool name="ask_user" question="<the question>" options="<option 1>,<option 2>,<option 3>" multi="<optional true|false>" />',
   },
   {
     id: "todo",

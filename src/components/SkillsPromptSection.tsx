@@ -163,7 +163,7 @@ export default function SkillsPromptSection() {
             <ToggleRow
               key={s.id}
               title={s.name}
-              desc={s.description}
+              desc={t(s.description)}
               value={isSkillEnabled(settings, s.id)}
               onChange={(v) => setSkillEnabled(s.id, v)}
               tone={s.mutating ? "warning" : undefined}
@@ -171,7 +171,7 @@ export default function SkillsPromptSection() {
           ))}
         </div>
         <p className="text-ui-xs text-foreground-subtlest mt-1.5">
-          {t("write_file và run_command có thể thay đổi project hoặc chạy lệnh trên máy.")}
+          {t("write_file, edit_file và run_command có thể thay đổi project hoặc chạy lệnh trên máy.")}
         </p>
       </div>
 

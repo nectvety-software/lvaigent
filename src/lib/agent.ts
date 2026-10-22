@@ -250,7 +250,7 @@ const RULES: readonly PromptRule[] = [
   },
   {
     requiresAny: ["web_read", "web_search"],
-    text: "web_read reads a URL as text (capped excerpt); web_search finds fresh\n   title+URL+snippet hits. Use them for anything outside the project instead of\n   guessing URLs or facts from memory.",
+    text: "web_read reads a URL as text — a CAPPED excerpt, so quote what you\n   read and never claim to have seen the whole page; web_search finds fresh\n   title+URL+snippet hits, and the snippet is all you get until you read the\n   URL. Use them for anything outside the project instead of guessing URLs or\n   facts from memory.",
   },
   {
     text: "After you start writing the answer, do not emit further tool blocks.",
@@ -297,6 +297,14 @@ const NUMBER_WORDS: Record<number, string> = {
   6: "six",
   7: "seven",
   8: "eight",
+  9: "nine",
+  10: "ten",
+  11: "eleven",
+  12: "twelve",
+  13: "thirteen",
+  14: "fourteen",
+  15: "fifteen",
+  16: "sixteen",
 };
 
 function renderRules(rules: readonly PromptRule[], on: (r: Requirement) => boolean): string {
@@ -329,13 +337,21 @@ const TODO_TOOL_BLOCK = `  <tool name="todo">
  *
  * Kept out of the numbered rule list so adding it cannot renumber the rules the
  * frozen prompt snapshot asserts.
+ *
+ * The sentence about function calls is load-bearing twice over. The free model
+ * lane declares two of lvaigent's tools as real functions (`read` and `shell`),
+ * and a model that has just been told "these are NOT function calls" refuses
+ * them — while the lane's own note says the opposite. Saying that both forms
+ * reach the same tools settles it.
  */
 const TOOL_PROTOCOL_FRAMING = `These are lvaigent's own tools, executed by the lvaigent app on the user's
-machine. They are NOT function calls offered by this chat site, so your
+machine. They are not function calls offered by this chat site, so your
 provider's capability list says nothing about them and there is nothing for you
-to check. Emitting the block IS the call: lvaigent runs it and sends the result
-back as the next message. Never answer that a tool is unavailable, disabled or
-"not provided in this session" — that is always wrong.`;
+to check — and where a provider does offer two of them (read and shell) as
+function calls, those reach the same tools, so either form works. Emitting the
+block IS the call: lvaigent runs it and sends the result back as the next
+message. Never answer that a tool is unavailable, disabled or "not provided in
+this session" — that is always wrong.`;
 
 /**
  * How many corrective turns one send may spend on a model that claims it has no
